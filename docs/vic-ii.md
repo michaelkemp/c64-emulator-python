@@ -1,12 +1,14 @@
 # MOS 6567/6569 VIC-II
 
-Phase 4 added **standard character (text) mode**. Phase 5 (this update)
-adds **sprites** (fetch, rendering, X/Y expansion, multicolor, priority,
-collision detection) and the **badline condition** -- but still not real
-cycle-accurate timing: no bitmap/extended-color modes, and no actual
-CPU-cycle stealing (see "Known gaps" below for exactly why, and what
-would need to exist first). No further phase is currently planned to
-close that specific gap; see `docs/roadmap.md`.
+Phase 4 added **standard character (text) mode**. Phase 5 added
+**sprites** (fetch, rendering, X/Y expansion, multicolor, priority,
+collision detection), the **badline condition**, and a cycle-driven
+`tick(cycles)` clock interface (added just after Phase 5, prompted by
+planning ahead for Phase 6's SID) -- but still not real cycle-accurate
+timing: no bitmap/extended-color modes, and no actual CPU-cycle stealing
+(see "Known gaps" below for exactly why, and what would need to exist
+first). No further phase is currently planned to close that specific
+gap; see `docs/roadmap.md`.
 
 ![The real KERNAL+BASIC ROMs, booted unmodified through this project's
 CPU+Bus+CIA+VIC-II stack and rendered by `scripts/render_frame.py`
@@ -17,6 +19,32 @@ article ([cebix.net/VIC-Article.txt](https://www.cebix.net/VIC-Article.txt))
 and the official preliminary MOS 6567 datasheet
 ([6502.org PDF](https://6502.org/documents/datasheets/mos/mos_6567_vic_ii_preliminary.pdf)),
 cited throughout below.
+
+## Clock rate: standardizing on PAL
+
+Real C64s come in several timing variants, verified rather than assumed
+(confirmed via web search against multiple sources, cross-checked with
+VICE's own local ROM database on the machine this was developed on --
+`/usr/share/vice/C64/default.vrs`):
+
+| Chip | Video standard | Cycles/line | Lines/frame |
+|---|---|---|---|
+| 6569 | PAL | 63 | 312 |
+| 6567R56A ("old" NTSC) | NTSC | 64 | 262 |
+| 6567R8 ("new" NTSC) | NTSC | 65 | 263 |
+
+This project standardizes on **PAL** (`CYCLES_PER_LINE = 63`,
+`PAL_LINES_PER_FRAME = 312`, `PAL_CLOCK_HZ = 985_248`), for three
+reasons: it's the single well-defined variant (NTSC's R56A/R8 split
+alone causes real compatibility differences between actual C64 units);
+Christian Bauer's article above -- this project's primary VIC-II
+reference -- is written around the PAL 6569; and the KERNAL this project
+already validates against (`901227-03`, staged via `scripts/stage_roms.sh`)
+is VICE's own default pairing for its PAL "C64" model. That ROM isn't
+locked to PAL, though -- this and other late-revision KERNALs
+auto-detect PAL/NTSC in software at runtime -- so the choice of region is
+entirely this emulator's own VIC-II timing constants, not something the
+ROM forces.
 
 ## The VIC-II has its own view of memory -- not the CPU's
 
@@ -196,14 +224,22 @@ section for why.
 - **No bitmap mode, no extended-color mode.** `BMM`/`ECM` are stored but
   inert -- no phase currently covers them; add one if real software needs
   them.
-- **Real CPU-cycle stealing still doesn't happen.** `is_badline` tells
-  you *whether* a line would steal cycles, and sprite DMA isn't
-  cycle-costed at all -- but nothing currently interleaves the CPU and
-  VIC-II cycle-by-cycle to actually spend that cost against. That needs a
-  real top-level "machine" driving both together, which doesn't exist yet
-  (the same gap already flagged in `docs/cia.md` for `irq_line` and real
-  elapsed time). Raster IRQs are still only line-granular
-  (`VicII.step_line()`), not cycle-exact within a line.
+- **Real CPU-cycle stealing still doesn't happen.** `VicII.tick(cycles)`
+  (matching `CIA6526.tick(cycles)`'s shape) advances the raster line
+  counter and fires raster IRQs precisely against however many PHI2
+  cycles it's fed -- driven with the exact cycle counts
+  `c6502.emulator.cpu.CPU.step()` already returns per instruction (via
+  its `StepResult.cycles`), raster IRQ timing becomes accurate to within
+  one CPU instruction, the standard approximation most non-cycle-stepped
+  6502 emulators use. `is_badline` tells you *whether* a line would
+  steal cycles, and sprite DMA isn't cycle-costed at all -- but nothing
+  actually *spends* that cost against the CPU's own budget, because
+  nothing yet interleaves the CPU and VIC-II together in a real running
+  loop that could remove cycles from one to give to the other. That
+  needs a real top-level "machine" object, which doesn't exist yet (the
+  same gap already flagged in `docs/cia.md` for `irq_line` and real
+  elapsed time, and for wiring CIA1/VIC-II's IRQ output and CIA2's NMI
+  output to the CPU's actual interrupt pins).
 - **Frame/border geometry is an approximation**, not real hardware's
   raster geometry: `render_frame` produces a fixed 384×272 image (320×200
   visible text/graphics area plus a 32px/36px border margin -- the same

@@ -58,6 +58,8 @@ FRAME_WIDTH = DISPLAY_WIDTH + 2 * BORDER_X
 FRAME_HEIGHT = DISPLAY_HEIGHT + 2 * BORDER_Y
 
 PAL_LINES_PER_FRAME = 312
+CYCLES_PER_LINE = 63  # PAL 6569 -- see docs/vic-ii.md's "Clock rate" section
+PAL_CLOCK_HZ = 985_248  # the standard-cited PAL C64 PHI2 system clock rate
 
 # An aesthetic approximation, not a calibrated real-hardware palette --
 # see docs/vic-ii.md.
@@ -79,6 +81,7 @@ class VicII:
         self._collision_sprite_sprite = 0x00
         self._collision_sprite_bg = 0x00
         self._badline_enabled_this_frame = False
+        self._cycles_into_line = 0
 
     # -- register file --------------------------------------------------
 
@@ -223,9 +226,13 @@ class VicII:
             and (self.current_raster & 0x07) == self.y_scroll
         )
 
-    # -- timing (not cycle-accurate -- see docs/vic-ii.md) -----------------
+    # -- timing --------------------------------------------------------------
 
     def step_line(self) -> None:
+        """Advance by exactly one raster line. `tick()` is the normal,
+        cycle-driven way to advance the VIC-II; this lower-level primitive
+        is still here directly for tests and anything driving raster
+        progression without real CPU cycle counts."""
         self.current_raster = (self.current_raster + 1) % PAL_LINES_PER_FRAME
         if self.current_raster == 0:
             self._badline_enabled_this_frame = False
@@ -233,6 +240,18 @@ class VicII:
             self._badline_enabled_this_frame = True
         if self.current_raster == self.raster_compare:
             self._irq_flags |= IRQ_RASTER
+
+    def tick(self, cycles: int) -> None:
+        """Advance by `cycles` PHI2 cycles (see docs/vic-ii.md's "Clock
+        rate" section for why 63 cycles/line), crossing however many
+        raster lines that spans. Matches `CIA6526.tick(cycles)`'s shape so
+        both chips can be driven the same way once something actually
+        feeds them real CPU cycle counts -- see "Known gaps" in
+        docs/vic-ii.md for why nothing does yet."""
+        self._cycles_into_line += cycles
+        while self._cycles_into_line >= CYCLES_PER_LINE:
+            self._cycles_into_line -= CYCLES_PER_LINE
+            self.step_line()
 
     # -- standard text-mode rendering --------------------------------------
 

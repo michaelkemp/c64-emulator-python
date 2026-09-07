@@ -185,8 +185,8 @@ BASIC port and hardware-build docs (specific to that board).
       same missing piece). Tracked as a future milestone, not this phase.
 - [ ] Raster-IRQ timing precise enough for real demoscene software —
       genuinely **not achieved**, and can't be until that same real
-      running-machine milestone exists (`VicII.step_line()` is still only
-      line-granular). Revisit when that milestone is built.
+      running-machine milestone exists. Revisit when that milestone is
+      built.
 - [x] Extended `docs/vic-ii.md` (from Phase 4) with sprite/collision/
       badline behavior and an explicit account of what's still missing
       and why.
@@ -196,6 +196,24 @@ BASIC port and hardware-build docs (specific to that board).
   ported CPU core, pokes a sprite pointer, shape data, position, enable
   bit, and color directly into `Bus`/`VicII` — `render_frame` then shows
   the sprite rendered at exactly the expected pixel position.
+
+**Post-Phase-5 addendum** (prompted by planning ahead for Phase 6's SID,
+which has its own real PHI2 clock dependency): added `VicII.tick(cycles)`,
+matching `CIA6526.tick(cycles)`'s shape, replacing the previous
+"something external decides when to call `step_line()`" gap with a real
+cycle-driven interface. Also settled and documented (`docs/vic-ii.md`'s
+"Clock rate" section, verified via web search and cross-checked against
+VICE's own local ROM database) that this project standardizes on **PAL**
+timing (63 cycles/line, 312 lines/frame, 985,248 Hz) rather than either
+NTSC variant. Verified by driving `VicII.tick()`/`CIA6526.tick()` with the
+real `CPU.step().cycles` values while booting the actual KERNAL+BASIC for
+3,000,000 instructions (~9.9M PHI2 cycles): the independently-computed
+expected raster line (`total_cycles // 63 % 312`) matched
+`VicII.current_raster` exactly, with the real boot screen still correct.
+This does **not** change the "real cycle stealing" gap above — `tick()`
+makes raster timing itself cycle-accurate, it doesn't make VIC-II able to
+actually take cycles away from the CPU, which still needs the same
+not-yet-built running-machine milestone.
 
 ## Phase 6 — SID (not started)
 

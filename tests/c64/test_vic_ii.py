@@ -7,6 +7,7 @@ from c64.vic_ii import (
     BORDER_COLOR,
     BORDER_X,
     BORDER_Y,
+    CYCLES_PER_LINE,
     COLLISION_SPRITE_BG,
     COLLISION_SPRITE_SPRITE,
     CONTROL1,
@@ -110,6 +111,37 @@ def test_step_line_wraps_and_fires_raster_irq_on_match(vic):
     assert vic.current_raster == 1
     assert vic.read_register(IRQ_STATUS) & 0x01 == 0
     vic.step_line()
+    assert vic.current_raster == 2
+    assert vic.read_register(IRQ_STATUS) & 0x01
+
+
+def test_tick_under_one_line_worth_of_cycles_does_not_advance(vic):
+    vic.tick(CYCLES_PER_LINE - 1)
+    assert vic.current_raster == 0
+
+
+def test_tick_exactly_one_line_worth_of_cycles_advances_by_one(vic):
+    vic.tick(CYCLES_PER_LINE)
+    assert vic.current_raster == 1
+
+
+def test_tick_accumulates_partial_cycles_across_calls(vic):
+    vic.tick(CYCLES_PER_LINE - 10)
+    assert vic.current_raster == 0
+    vic.tick(5)
+    assert vic.current_raster == 0
+    vic.tick(5)
+    assert vic.current_raster == 1  # the leftover 10 cycles from both calls crossed the line
+
+
+def test_tick_can_cross_several_lines_in_one_call(vic):
+    vic.tick(CYCLES_PER_LINE * 3 + 1)
+    assert vic.current_raster == 3
+
+
+def test_tick_fires_raster_irq_the_same_as_step_line(vic):
+    vic.write_register(RASTER, 2)
+    vic.tick(CYCLES_PER_LINE * 2)
     assert vic.current_raster == 2
     assert vic.read_register(IRQ_STATUS) & 0x01
 
