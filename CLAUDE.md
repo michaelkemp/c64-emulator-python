@@ -129,7 +129,7 @@ docs/
   6502-reference.md     # condensed 6502 ISA notes (ported as-is)
   testing-strategy.md   # how correctness gets validated, incl. license discipline
   cia.md                # CIA register map + behavior (Phase 3)
-  vic-ii.md             # VIC-II register map + text-mode behavior (Phase 4)
+  vic-ii.md             # VIC-II register map, text mode, sprites (Phase 4/5)
   sid.md                # written when SID is implemented (Phase 6) -- see
                         # "Documentation convention" above. Doesn't exist yet.
 scripts/
@@ -148,7 +148,7 @@ src/
     keyboard_matrix.py      # 8x8 key matrix + CIA1 port coupling (Phase 3)
     joystick.py             # digital joystick (Phase 3)
     vic_ii.py               # MOS 6567/6569 VIC-II: registers + text-mode
-                             # rendering (Phase 4)
+                             # rendering + sprites/collisions (Phase 4/5)
 tests/
   emulator/             # CPU core tests (ported)
   asm/                  # assembler tests (ported, one adapted)
@@ -183,7 +183,14 @@ Summary:
       real C64 boot screen (`**** COMMODORE 64 BASIC V2 ****` etc.) from
       genuine ROM content; see `docs/roadmap.md`'s Phase 4 and
       `docs/vic-ii.md`
-- [ ] **Phase 5** — VIC-II sprites + cycle-accurate raster timing
+- [x] **Phase 5** — VIC-II sprites (fetch/render/expansion/multicolor/
+      priority, sprite-sprite & sprite-background collision) — verified
+      with a real assembled 6502 program via this project's own
+      assembler; cycle-accurate raster/badline timing genuinely
+      **not achieved** (needs a real interleaved CPU+VIC-II running
+      machine that doesn't exist yet — badlines are modeled only as a
+      queryable condition); see `docs/roadmap.md`'s Phase 5 and
+      `docs/vic-ii.md`
 - [ ] **Phase 6** — SID
 
 ## Reference documentation

@@ -163,15 +163,39 @@ BASIC port and hardware-build docs (specific to that board).
   — plus the official preliminary MOS 6567 datasheet —
   [6502.org](https://6502.org/documents/datasheets/mos/mos_6567_vic_ii_preliminary.pdf).
 
-## Phase 5 — VIC-II sprites + cycle-accurate timing (not started)
+## Phase 5 — VIC-II sprites + cycle-accurate timing (sprites done; cycle-accurate timing deferred)
 
-- [ ] Sprite fetch/display, sprite-sprite and sprite-background collision
-      detection, "badlines" (the VIC-II stealing cycles from the CPU to
-      fetch video matrix data), and raster-IRQ timing precise enough for
-      real software (much C64 software, especially anything from the
-      demoscene, depends on exact raster timing).
-- [ ] Extend `docs/vic-ii.md` (from Phase 4) with sprite/badline/raster
-      timing behavior.
+- [x] Sprite fetch/display: shape data via sprite pointers (the video
+      matrix's last 8 bytes) through the same `Bus.read_vic` used for
+      character data (so the char-ROM-substitution quirk applies to
+      sprites too, correctly); standard and multicolor pixel decoding;
+      X/Y expansion; the real X=24/Y=50 coordinate origin; sprite-vs-
+      sprite priority by number and each sprite's own vs-display priority
+      bit.
+- [x] Sprite-sprite and sprite-background collision detection: `$D01E`/
+      `$D01F` accumulate collisions across renders and clear-on-read (a
+      different rule from `$D019`'s write-1-to-clear), firing `$D019`'s
+      IMMC/IMBC only for genuinely new collisions so an ongoing overlap
+      doesn't refire the interrupt every frame.
+- [x] "Badlines" — but as a queryable condition only
+      (`VicII.is_badline`, including the DEN-latched-at-line-`$30` quirk
+      that the real "open border" demo trick depends on), **not** actual
+      CPU-cycle stealing: that needs a real interleaved CPU+VIC-II main
+      loop, which doesn't exist yet (see `docs/cia.md`'s `irq_line` gap —
+      same missing piece). Tracked as a future milestone, not this phase.
+- [ ] Raster-IRQ timing precise enough for real demoscene software —
+      genuinely **not achieved**, and can't be until that same real
+      running-machine milestone exists (`VicII.step_line()` is still only
+      line-granular). Revisit when that milestone is built.
+- [x] Extended `docs/vic-ii.md` (from Phase 4) with sprite/collision/
+      badline behavior and an explicit account of what's still missing
+      and why.
+- Verified with a real integration check (run manually this session, not
+  committed as a test): a tiny genuine 6502 program, assembled with this
+  project's own ported assembler (`c6502.asm.assemble`) and run on the
+  ported CPU core, pokes a sprite pointer, shape data, position, enable
+  bit, and color directly into `Bus`/`VicII` — `render_frame` then shows
+  the sprite rendered at exactly the expected pixel position.
 
 ## Phase 6 — SID (not started)
 

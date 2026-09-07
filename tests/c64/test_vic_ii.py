@@ -2,6 +2,8 @@ import pytest
 
 from c64.vic_ii import (
     BACKGROUND_COLOR0,
+    BADLINE_FIRST_LINE,
+    BADLINE_LAST_LINE,
     BORDER_COLOR,
     BORDER_X,
     BORDER_Y,
@@ -9,10 +11,20 @@ from c64.vic_ii import (
     COLLISION_SPRITE_SPRITE,
     CONTROL1,
     CONTROL2,
+    DEN_LATCH_LINE,
     IRQ_ENABLE,
     IRQ_STATUS,
     MEMORY_POINTERS,
+    MSBX,
     RASTER,
+    SPRITE_COLOR_BASE,
+    SPRITE_ENABLE,
+    SPRITE_MULTICOLOR0,
+    SPRITE_MULTICOLOR1,
+    SPRITE_MULTICOLOR_SELECT,
+    SPRITE_PRIORITY,
+    SPRITE_X_EXPANSION,
+    SPRITE_Y_EXPANSION,
     VicII,
 )
 
@@ -135,3 +147,181 @@ def test_display_disabled_shows_background_only(vic):
 
     frame = vic.render_frame(bus)
     assert frame[BORDER_Y][BORDER_X] == 6  # background, not the character's foreground
+
+
+# -- sprites ----------------------------------------------------------------
+
+
+def test_sprite_register_helpers_decode_bits_per_sprite(vic):
+    vic.write_register(SPRITE_ENABLE, 0b0000_0101)
+    assert vic.sprite_enabled(0) is True
+    assert vic.sprite_enabled(1) is False
+    assert vic.sprite_enabled(2) is True
+
+    vic.write_register(0, 0x50)  # sprite 0 X low byte
+    vic.write_register(MSBX, 0b0000_0001)  # sprite 0's X MSB set
+    assert vic.sprite_x(0) == 0x150
+    assert vic.sprite_y(0) == 0  # not written yet
+
+
+def test_hires_sprite_renders_at_the_documented_coordinate_offset():
+    vic = VicII()
+    bus = FakeBus()
+    bus.mem[0x3F8] = 5  # sprite 0 pointer -> data at $140
+    bus.mem[0x140] = 0xFF  # row 0: first 8 pixels on
+    vic.write_register(0, 24 + 3)  # sprite 0 X
+    vic.write_register(1, 50 + 2)  # sprite 0 Y
+    vic.write_register(SPRITE_ENABLE, 0x01)
+    vic.write_register(SPRITE_COLOR_BASE, 2)
+
+    frame = vic.render_frame(bus)
+
+    for col in range(8):
+        assert frame[BORDER_Y + 2][BORDER_X + 3 + col] == 2
+    assert frame[BORDER_Y + 2][BORDER_X + 2] != 2  # one pixel left of the sprite: untouched
+
+
+def test_multicolor_sprite_uses_the_shared_and_own_colors():
+    vic = VicII()
+    bus = FakeBus()
+    bus.mem[0x3F8] = 5
+    # cell0=01 (multicolor0), cell1=10 (own color), cell2=11 (multicolor1), cell3=00 (transparent)
+    bus.mem[0x140] = 0b01_10_11_00
+    vic.write_register(0, 24)
+    vic.write_register(1, 50)
+    vic.write_register(SPRITE_ENABLE, 0x01)
+    vic.write_register(SPRITE_MULTICOLOR_SELECT, 0x01)
+    vic.write_register(SPRITE_COLOR_BASE, 7)
+    vic.write_register(SPRITE_MULTICOLOR0, 3)
+    vic.write_register(SPRITE_MULTICOLOR1, 9)
+
+    frame = vic.render_frame(bus)
+
+    assert frame[BORDER_Y][BORDER_X + 0] == 3
+    assert frame[BORDER_Y][BORDER_X + 1] == 3
+    assert frame[BORDER_Y][BORDER_X + 2] == 7
+    assert frame[BORDER_Y][BORDER_X + 3] == 7
+    assert frame[BORDER_Y][BORDER_X + 4] == 9
+    assert frame[BORDER_Y][BORDER_X + 5] == 9
+    assert frame[BORDER_Y][BORDER_X + 6] not in (3, 7, 9)  # transparent -- nothing drawn
+
+
+def test_sprite_expansion_doubles_pixel_size():
+    vic = VicII()
+    bus = FakeBus()
+    bus.mem[0x3F8] = 5
+    bus.mem[0x140] = 0x80  # row 0: only the leftmost pixel on
+    vic.write_register(0, 24)
+    vic.write_register(1, 50)
+    vic.write_register(SPRITE_ENABLE, 0x01)
+    vic.write_register(SPRITE_X_EXPANSION, 0x01)
+    vic.write_register(SPRITE_Y_EXPANSION, 0x01)
+    vic.write_register(SPRITE_COLOR_BASE, 4)
+
+    frame = vic.render_frame(bus)
+
+    for y in range(2):
+        for x in range(2):
+            assert frame[BORDER_Y + y][BORDER_X + x] == 4
+    assert frame[BORDER_Y][BORDER_X + 2] != 4
+    assert frame[BORDER_Y + 2][BORDER_X] != 4
+
+
+def test_sprite_behind_display_is_hidden_by_foreground_pixels():
+    vic = VicII()
+    bus = FakeBus()
+    vic.write_register(MEMORY_POINTERS, 0x12)
+    vic.write_register(CONTROL1, 0x10 | 0x08)
+    vic.write_register(CONTROL2, 0x08)
+    bus.mem[0x0400] = 65
+    bus.mem[0x0800 + 65 * 8] = 0xFF  # character's first row: all foreground
+    bus.color_ram[0] = 6
+
+    bus.mem[0x07F8] = 5  # sprite 0 pointer -- matrix base is $0400 here, so pointers live at $07F8
+    bus.mem[0x140] = 0xFF  # sprite exactly overlaps that character cell
+    vic.write_register(0, 24)
+    vic.write_register(1, 50)
+    vic.write_register(SPRITE_ENABLE, 0x01)
+    vic.write_register(SPRITE_COLOR_BASE, 2)
+    vic.write_register(SPRITE_PRIORITY, 0x01)  # sprite 0 drawn behind the display
+
+    frame = vic.render_frame(bus)
+    assert frame[BORDER_Y][BORDER_X] == 6  # character's foreground wins
+
+
+def test_sprite_sprite_collision_persists_until_read_then_can_refire():
+    vic = VicII()
+    bus = FakeBus()
+    bus.mem[0x3F8] = 5  # sprite 0 pointer
+    bus.mem[0x3F9] = 5  # sprite 1 pointer -- same shape, same position -> guaranteed overlap
+    bus.mem[0x140] = 0xFF
+    for n in (0, 1):
+        vic.write_register(n * 2, 24)
+        vic.write_register(n * 2 + 1, 50)
+    vic.write_register(SPRITE_ENABLE, 0b11)
+    vic.write_register(SPRITE_COLOR_BASE, 2)
+    vic.write_register(SPRITE_COLOR_BASE + 1, 3)
+
+    vic.render_frame(bus)
+    assert vic.read_register(COLLISION_SPRITE_SPRITE) == 0b11
+    assert vic.read_register(IRQ_STATUS) & 0x04  # IMMC
+    assert vic.read_register(COLLISION_SPRITE_SPRITE) == 0  # reading cleared the whole register
+
+    vic.write_register(IRQ_STATUS, 0x04)  # ack IMMC too
+    vic.render_frame(bus)  # sprites still overlapping -> a genuinely fresh collision
+    assert vic.read_register(COLLISION_SPRITE_SPRITE) == 0b11
+    assert vic.read_register(IRQ_STATUS) & 0x04  # fires again since state had been cleared
+
+
+def test_sprite_background_collision_sets_register_and_fires_irq():
+    vic = VicII()
+    bus = FakeBus()
+    vic.write_register(MEMORY_POINTERS, 0x12)
+    vic.write_register(CONTROL1, 0x10 | 0x08)
+    vic.write_register(CONTROL2, 0x08)
+    bus.mem[0x0400] = 65
+    bus.mem[0x0800 + 65 * 8] = 0xFF
+    bus.color_ram[0] = 6
+
+    bus.mem[0x07F8] = 5  # sprite 0 pointer -- matrix base is $0400 here, so pointers live at $07F8
+    bus.mem[0x140] = 0xFF
+    vic.write_register(0, 24)
+    vic.write_register(1, 50)
+    vic.write_register(SPRITE_ENABLE, 0x01)
+    vic.write_register(SPRITE_COLOR_BASE, 2)
+
+    vic.render_frame(bus)
+    assert vic.read_register(COLLISION_SPRITE_BG) == 0x01
+    assert vic.read_register(IRQ_STATUS) & 0x02  # IMBC
+
+
+# -- badlines (condition only -- see docs/vic-ii.md) -------------------------
+
+
+def test_badlines_disabled_all_frame_if_den_was_off_at_the_latch_line(vic):
+    vic.current_raster = DEN_LATCH_LINE - 1
+    vic.write_register(CONTROL1, 0x00)  # DEN off
+    vic.step_line()  # crosses the latch line with DEN off -> badlines stay off all frame
+    vic.write_register(CONTROL1, 0x10)  # turning DEN on now is too late for this frame
+    for _ in range(BADLINE_FIRST_LINE, BADLINE_LAST_LINE):
+        assert vic.is_badline is False
+        vic.step_line()
+
+
+def test_badlines_fire_on_matching_lines_when_den_was_on_at_the_latch_line(vic):
+    vic.current_raster = DEN_LATCH_LINE - 1
+    vic.write_register(CONTROL1, 0x10)  # DEN on, YSCROLL=0
+    vic.step_line()
+    assert vic.current_raster == DEN_LATCH_LINE
+    assert vic.is_badline is True  # $30 & 7 == 0 == YSCROLL
+
+
+def test_badlines_only_match_the_selected_yscroll(vic):
+    vic.write_register(CONTROL1, 0x10 | 0x03)  # DEN on, YSCROLL=3
+    vic.current_raster = DEN_LATCH_LINE - 1
+    vic.step_line()
+    assert vic.is_badline is False  # $30 & 7 == 0, YSCROLL == 3 -> no match yet
+    for _ in range(3):
+        vic.step_line()
+    assert vic.current_raster == DEN_LATCH_LINE + 3
+    assert vic.is_badline is True
