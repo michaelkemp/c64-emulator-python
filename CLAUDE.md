@@ -103,6 +103,21 @@ specific to *this* project):
   re-explained here; the code and its own comments are the source of
   truth for how it behaves.
 
+## Documentation convention: one reference doc per chip
+
+`docs/6502-reference.md` documents the CPU core; the sibling repo's
+`docs/architecture.md` documented the ACIA's register semantics straight
+from its datasheet before any code was written against it. **Do the same
+here for every custom chip, written as (or just before) it's implemented,
+not after**: `docs/cia.md`, `docs/vic-ii.md`, `docs/sid.md`. Each should
+cover the register map, the chip's actual documented behavior (cite the
+datasheet/article section), and any deliberate simplification or known
+gap versus real hardware — the same shape as the sibling repo's
+`docs/6502-reference.md` and its `AciaDevice` documentation. A chip
+implementation with no doc explaining its register semantics is exactly
+the kind of undocumented decision this whole convention exists to avoid.
+Each phase in `docs/roadmap.md` names the specific doc it owes.
+
 ## Repo map
 
 ```
@@ -113,6 +128,9 @@ docs/
   roadmap.md            # phase checklist / detailed status tracker
   6502-reference.md     # condensed 6502 ISA notes (ported as-is)
   testing-strategy.md   # how correctness gets validated, incl. license discipline
+  cia.md, vic-ii.md, sid.md  # one per custom chip, written as each is
+                             # implemented -- see "Documentation convention" above.
+                             # Don't exist yet; nothing chip-specific is built yet.
 scripts/
   fetch_dormann_tests.sh # fetches the GPLv3 Klaus Dormann suite, not vendored
 src/

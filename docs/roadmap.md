@@ -71,6 +71,8 @@ checking:
       TOD clock), serial shift register, interrupt control register.
       Least exotic of the three custom chips — a reasonable first target
       after the memory map exists.
+- [ ] **`docs/cia.md`** — register map + behavior, written as (or just
+      before) the code, per `CLAUDE.md`'s documentation convention.
 - Reference: MOS 6526 CIA preliminary datasheet —
   [6502.org](https://6502.org/documents/datasheets/mos/mos_6526_cia_preliminary_nov_1981.pdf).
 
@@ -80,6 +82,8 @@ checking:
       the video matrix/color RAM relationship, border/background colors.
       Deliberately *not* cycle-accurate yet (no badlines, no sprite
       timing) — get something on screen before chasing timing precision.
+- [ ] **`docs/vic-ii.md`** — start it here (register map, text-mode
+      behavior); it'll grow in Phase 5 rather than becoming a second file.
 - Reference: Christian Bauer's cycle-by-cycle reverse-engineering
   article — [cebix.net/VIC-Article.txt](https://www.cebix.net/VIC-Article.txt)
   — plus the official preliminary MOS 6567 datasheet —
@@ -92,6 +96,8 @@ checking:
       fetch video matrix data), and raster-IRQ timing precise enough for
       real software (much C64 software, especially anything from the
       demoscene, depends on exact raster timing).
+- [ ] Extend `docs/vic-ii.md` (from Phase 4) with sprite/badline/raster
+      timing behavior.
 
 ## Phase 6 — SID (not started)
 
@@ -100,6 +106,9 @@ checking:
       unit-to-unit) — start with a reasonable digital approximation and
       refine later; this is the most forgiving chip to get "close enough"
       early, unlike VIC-II timing.
+- [ ] **`docs/sid.md`** — register map + behavior, including which parts
+      are an approximation vs. bit-accurate, per `CLAUDE.md`'s
+      documentation convention.
 - Reference: [reSID](https://github.com/daglem/reSID) — the standard
   reference implementation (GPL-licensed — study the analog-filter
   modeling approach, don't copy code; same discipline as this project's
