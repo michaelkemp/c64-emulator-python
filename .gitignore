@@ -226,3 +226,7 @@ tests/emulator/fixtures/dormann/
 # reference) -- never vendored. See docs/roadmap.md's ROM-licensing
 # research item and docs/testing-strategy.md.
 roms/
+
+# scripts/render_frame.py's default output -- a generated screenshot,
+# not something to track.
+/c64_boot.png
