@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "c64emu"
+version = "0.0.1"
+description = "A Python emulator for the Commodore 64"
+requires-python = ">=3.11"
+readme = "CLAUDE.md"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "slow: exercises the full Klaus Dormann 6502 functional test suite (~30M steps, ~1-2 min); requires fetching its GPLv3 test binary first via scripts/fetch_dormann_tests.sh",
+]
+addopts = "-m 'not slow'"
