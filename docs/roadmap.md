@@ -421,6 +421,51 @@ together from real elapsed cycles, with real interrupt delivery.
   calls, unlike the Phase 6 check) -- zero-crossing counting on the
   captured samples measured **exactly 440.0Hz**.
 
+**Post-Phase-10 addendum: reliable program input.** Raised before
+starting Phase 11 -- the user noticed live keyboard input
+(`peripherals/keyboard.py`) can be less than rock solid when typing a
+BASIC program by hand, and wanted a quick way to load test programs
+without waiting for real disk/cartridge support. Root cause identified,
+not just patched around: `scripts/run_c64.py`'s main loop only drains
+pygame's keyboard event queue once per simulated video frame, so a real
+keypress fast enough that its down *and* up both land within one frame's
+wall-clock duration (which can be tens of milliseconds on this project's
+documented, unoptimized performance profile) nets out to a press the
+emulated KERNAL never actually sees.
+
+- [x] `src/peripherals/auto_type.py` — `AutoTyper`: types text reliably
+      by holding each key for a fixed number of *simulated* frames
+      (decoupled from host speed or real typing speed) instead of
+      relying on real-time keypress events -- the same technique this
+      project's own validation scripts had already used by hand since
+      Phase 9. Covers letters, digits, space, RETURN, and common
+      punctuation, including shifted symbols (`"`, `(`, `)`, `!`, `&`,
+      `'`, `<`, `>`, `?`) verified empirically the same way
+      `KeyboardMatrix.KEY_POSITIONS` was, not guessed.
+- [x] `scripts/run_c64.py --type-file program.bas` types a file in
+      automatically once boot has settled at the READY prompt.
+      Ctrl+V pastes the real system clipboard's text the same reliable
+      way, at any point, via `pygame.scrap` (verified for real against a
+      live X11 clipboard set with `xclip` on the machine this was
+      developed on, not just headlessly).
+- [x] `tests/peripherals/test_auto_type.py` — 8 tests. Caught a real bug
+      before it shipped: `<`, `>`, and `?` were entirely missing from the
+      character table, silently dropped (by design, for genuinely
+      unmappable characters) rather than raising -- but for `<`/`>`
+      specifically this corrupted real BASIC (`IF X<24` typed as
+      `IF X24`), caught only by actually running the typed program
+      through `Machine`, not by inspecting the mapping table.
+- [x] `examples/sound_test.bas` and `examples/sprite_test.bas` -- small
+      real BASIC programs (a scale on SID voice 1; a bouncing sprite)
+      to test future chip/peripheral work against without needing disk
+      support. Verified by actually typing and running both through the
+      real `Machine` + `AutoTyper` pipeline: the sprite demo hit a real
+      bug in the *program itself* (a 9-bit sprite X-coordinate poked
+      directly as a 0-255 byte, correctly raising real BASIC's own
+      `?ILLEGAL QUANTITY ERROR` once X exceeded 255 -- exactly what real
+      hardware would do), fixed by keeping the demo's bounce range within
+      a single byte rather than by changing anything in the emulator.
+
 ## Phase 11 — Storage: disk + cartridge (not started)
 
 - [ ] Decide fidelity level explicitly before starting: a real 1541

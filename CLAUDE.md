@@ -142,8 +142,11 @@ scripts/
                           # VIC-II's screen output (Phase 4)
   render_audio.py        # plays a test tone through the real SID stack
                           # and writes a WAV file (Phase 6)
-  run_c64.py             # boots the staged ROMs and shows the screen in
-                          # a real pygame window (Phase 8)
+  run_c64.py             # boots the staged ROMs; screen+keyboard+audio,
+                          # --type-file / Ctrl+V program input (Phase 8-10)
+examples/
+  sound_test.bas          # plays a scale on SID voice 1
+  sprite_test.bas         # a bouncing sprite -- see run_c64.py --type-file
 src/
   c6502/                # ported CPU core + assembler -- see "What came over" above
     emulator/
@@ -166,10 +169,11 @@ src/
     screen.py              # pygame window showing VicII output (Phase 8)
     keyboard.py            # real key events -> KeyboardMatrix (Phase 9)
     audio.py               # Sid.output_sample() -> pygame.mixer (Phase 10)
+    auto_type.py            # reliable frame-timed program input (--type-file/Ctrl+V)
 tests/
   emulator/             # CPU core tests (ported)
   asm/                  # assembler tests (ported, one adapted)
-  peripherals/          # Screen + Keyboard + Audio tests -- gated behind pytest.importorskip
+  peripherals/          # Screen + Keyboard + Audio + AutoTyper tests -- gated behind pytest.importorskip
   c64/                  # Bus + CpuPort + CIA + keyboard/joystick + VIC-II + SID + Machine tests
 ```
 
@@ -259,6 +263,20 @@ Summary:
       and one was already explicitly deferred once (Phase 8). Sustained
       playback can have audible gaps under load as a documented
       consequence — see `docs/roadmap.md`'s Phase 10.
+- [x] **Reliable program input** (`src/peripherals/auto_type.py`,
+      `examples/*.bas`) — raised before Phase 11 after live keyboard
+      typing turned out to be less than rock solid; root cause was
+      `run_c64.py`'s event loop only draining keyboard events once per
+      simulated frame, so a fast real keypress can land entirely within
+      one frame and never reach the emulated KERNAL. `AutoTyper` types
+      at a fixed simulated-frame pace instead of real time, wired up via
+      `run_c64.py --type-file` and Ctrl+V (real clipboard, via
+      `pygame.scrap`, verified against a live X11 clipboard). Caught a
+      real bug before shipping (`<`/`>`/`?` entirely missing from the
+      character table, silently corrupting real BASIC) and, while
+      verifying the two example programs by actually running them, a
+      real bug in the example program itself (not the emulator) — see
+      `docs/roadmap.md`'s post-Phase-10 addendum.
 - Next up: storage (Phase 11)
 
 ## Reference documentation
