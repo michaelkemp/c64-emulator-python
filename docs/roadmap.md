@@ -261,3 +261,86 @@ not-yet-built running-machine milestone.
   ported Klaus Dormann precedent). Not used as a source of any code or
   exact constants here -- see `docs/sid.md` for what was actually
   verified against the primary MOS 6581 datasheet instead.
+
+## Phase 7 — The real machine (done)
+
+With all six chips built, this closes the loop every prior phase's docs
+flagged as missing: something that actually runs the CPU and every chip
+together from real elapsed cycles, with real interrupt delivery.
+
+- [x] `src/c64/machine.py` — `Machine`: owns `Bus`, `CPU`, both
+      `CIA6526`s, `VicII`, `Sid`, the keyboard matrix, and both
+      joysticks. `step()` executes one CPU instruction, feeds its exact
+      cycle count to every chip's `tick()`, then delivers interrupts —
+      IRQ level-triggered (`cia1.irq_line or vic.irq_line`, checked every
+      step, safe to call repeatedly since the ported CPU's own `irq()`
+      already no-ops while the I flag is set), NMI edge-triggered
+      (`cia2.irq_line`'s rising edge only, matching real 6502 semantics).
+      `from_roms()` is a convenience constructor loading the three
+      staged ROM files. See `docs/machine.md` for the full design and
+      known gaps (still not cycle-exact within an instruction, badlines
+      still don't steal cycles, nothing paces real wall-clock time yet —
+      that's Phase 10's job once real audio exists).
+- [x] **`docs/machine.md`** — written before the code, per `CLAUDE.md`'s
+      documentation convention (extended here to the integration layer,
+      not just individual chips, since the design decisions involved —
+      level vs. edge-triggered interrupts, when cycles get spent — are
+      exactly the kind this convention exists to make explicit).
+- [x] `tests/c64/test_machine.py` — 8 tests, including two tiny genuine
+      6502 programs (assembled with this project's own ported assembler)
+      that prove real IRQ delivery from CIA1 and real edge-triggered NMI
+      delivery from CIA2 (verifying it does **not** re-fire while the
+      source line stays asserted without being cleared).
+- Verified with a real integration check (run manually this session, not
+  committed as a test): booting the genuine, unmodified KERNAL+BASIC
+  through `Machine` for 1,000,000 instructions shows the KERNAL's own
+  jiffy-clock counter (`$A0`-`$A2`, the real "TIME" counter every C64
+  KERNAL maintains) staying at zero during the RAM-test/hardware-init
+  phase (consistent with Phase 4's finding that the screen doesn't turn
+  on until ~561,000 instructions), then actually incrementing once BASIC
+  reaches its keyboard-wait loop (`$E5CD`) — concrete, unmodified-ROM
+  proof that CIA1 Timer A underflow reaches `irq_line`, `Machine.step()`
+  delivers it, the real KERNAL IRQ handler runs and does its real job,
+  and execution correctly resumes afterward.
+
+## Phase 8 — Screen output (not started)
+
+- [ ] A `peripherals/` package (new top-level concern, separate from the
+      pure emulation core in `src/c64/`) with a `screen.py` that displays
+      `VicII.render_frame()` in a real window, refreshed at the real PAL
+      rate `Machine` now produces.
+- [ ] This project's first runtime dependency: **pygame** (user's
+      choice — also covers keyboard events for Phase 9 and audio output
+      for Phase 10, avoiding three separate libraries).
+
+## Phase 9 — Keyboard input (not started)
+
+- [ ] `peripherals/keyboard.py`: real key events (via pygame, so this
+      depends on Phase 8's window existing to capture them from) mapped
+      to `KeyboardMatrix.press`/`release`.
+- [ ] Finally resolve the keyboard-matrix-layout ambiguity flagged in
+      `docs/cia.md` (two disputed community sources) by tracing the real
+      KERNAL's own decode table, now that ROMs are staged — rather than
+      trusting either secondary source.
+
+## Phase 10 — Audio output (not started)
+
+- [ ] Feed `Sid.output_sample()` to real audio output (pygame's mixer).
+- [ ] `Machine` needs real wall-clock pacing once this exists — running
+      as fast as Python allows (fine for screen-only operation) makes
+      audio pitch/timing wrong.
+
+## Phase 11 — Storage: disk + cartridge (not started)
+
+- [ ] Decide fidelity level explicitly before starting: a real 1541
+      emulation is itself another whole 6502+ROM+RAM machine talking a
+      serial protocol (would reuse `c6502` a second time) — much bigger
+      than a "fake fast-load" that intercepts KERNAL's LOAD routine and
+      feeds bytes straight from a `.d64` file, which is what most
+      simplified emulators actually do. Possibly split into both, in that
+      order.
+- [ ] Cartridge (`.crt`) support extends `Bus`'s existing bank-switching
+      to handle the GAME/EXROM "ultimax" mode Phase 2 explicitly deferred.
+- [ ] Blank/writable disk image creation, so software running in the
+      emulator can actually save data back out to a real file (raised
+      alongside the original `peripherals/` idea).

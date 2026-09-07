@@ -131,6 +131,8 @@ docs/
   cia.md                # CIA register map + behavior (Phase 3)
   vic-ii.md             # VIC-II register map, text mode, sprites (Phase 4/5)
   sid.md                # SID register map + behavior (Phase 6)
+  machine.md             # how Machine.step() wires everything together,
+                        # incl. IRQ/NMI delivery (Phase 7)
 scripts/
   fetch_dormann_tests.sh # fetches the GPLv3 Klaus Dormann suite, not vendored
   stage_roms.sh          # stages the user's own local C64 ROMs into
@@ -154,6 +156,8 @@ src/
                              # rendering + sprites/collisions (Phase 4/5)
     sid.py                  # MOS 6581/8580 SID: oscillators, ADSR,
                              # filter (Phase 6)
+    machine.py              # ties CPU+Bus+chips together, real cycle
+                             # driving + interrupt delivery (Phase 7)
 tests/
   emulator/             # CPU core tests (ported)
   asm/                  # assembler tests (ported, one adapted)
@@ -202,9 +206,17 @@ Summary:
       real assembled 6502 program (`scripts/render_audio.py`) whose
       generated audio measured **exactly 440.0Hz** by zero-crossing count
       for a 440Hz note poke — see `docs/roadmap.md`'s Phase 6 and
-      `docs/sid.md`. All six original roadmap phases are now done; what's
-      left is cycle-accurate timing and real I/O (screen/keyboard/audio/
-      disk), neither of which has a phase number yet
+      `docs/sid.md`. All six original roadmap phases are now done.
+- [x] **Phase 7** — the real machine (`src/c64/machine.py`) — `Machine`
+      drives CPU+Bus+both CIAs+VIC-II+SID together from real elapsed
+      cycles, with real IRQ (level-triggered) and NMI (edge-triggered)
+      delivery; verified by booting the real KERNAL+BASIC and watching
+      its own real jiffy-clock counter (`$A0`-`$A2`) actually increment
+      once BASIC reaches its keyboard-wait loop — see `docs/roadmap.md`'s
+      Phase 7 and `docs/machine.md`. Next up: screen output (Phase 8,
+      first runtime dependency — pygame), then keyboard (Phase 9,
+      depends on Phase 8's window for event capture), then audio
+      (Phase 10, needs real wall-clock pacing), then storage (Phase 11)
 
 ## Reference documentation
 
