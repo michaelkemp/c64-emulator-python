@@ -282,7 +282,15 @@ class VicII:
 
         matrix_base = self.video_matrix_base
         char_base = self.char_base
-        x_scroll, y_scroll = self.x_scroll, self.y_scroll
+        x_scroll = self.x_scroll
+        # YSCROLL's hardware-neutral value is 3, not 0 (confirmed
+        # empirically: the real KERNAL's own default $D011 leaves YSCROLL
+        # at 3, and real hardware shows all 25 rows with zero clipping at
+        # that default) -- XSCROLL's neutral genuinely is 0, so this
+        # isn't a copy-paste asymmetry. Treating raw y_scroll as the
+        # offset pushed the bottom row's last 3 scanlines past the
+        # display boundary at the real default, clipping it.
+        y_shift = self.y_scroll - 3
 
         for row in range(row_offset, row_offset + visible_rows):
             for col in range(col_offset, col_offset + visible_cols):
@@ -291,7 +299,7 @@ class VicII:
                 char_addr = char_base + screen_code * CHAR_PIXELS
                 for line in range(CHAR_PIXELS):
                     byte = bus.read_vic(char_addr + line)
-                    py = BORDER_Y + row * CHAR_PIXELS + line + y_scroll
+                    py = BORDER_Y + row * CHAR_PIXELS + line + y_shift
                     if not (BORDER_Y <= py < BORDER_Y + DISPLAY_HEIGHT):
                         continue
                     for bit in range(CHAR_PIXELS):

@@ -154,6 +154,21 @@ character grid gets drawn -- not by actually changing the real hardware's
 border geometry pixel-for-pixel, which is a raster-timing concern (see
 "Known gaps").
 
+**`YSCROLL`'s neutral value is 3, not 0** (`XSCROLL`'s genuinely is 0 --
+this isn't a copy-paste asymmetry). The real KERNAL's own default leaves
+`$D011`'s `YSCROLL` bits at 3 (confirmed empirically in Phase 4:
+`$D011=$1B`), and real hardware shows all 25 rows with zero clipping at
+that default. An earlier version of this code added raw `y_scroll` as
+the pixel shift, which at the real default pushed the bottom row's last
+3 scanlines past the display boundary and silently dropped them --
+invisible in the Phase 4/5 boot-screen checks (which never had content
+reach the last row) and only caught later from a real screenshot of a
+full, scrolled screen. Fixed by using `y_scroll - 3` as the shift, so the
+real default produces zero net offset; genuine non-default values now
+shift content up/down from that neutral point (with the same top/bottom
+clipping approximation this section already documents, just centered
+correctly).
+
 ## Sprites
 
 Each of the 8 sprites is 24×21 pixels in standard (hires) mode, or

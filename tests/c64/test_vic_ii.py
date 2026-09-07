@@ -13,6 +13,7 @@ from c64.vic_ii import (
     CONTROL1,
     CONTROL2,
     DEN_LATCH_LINE,
+    DISPLAY_HEIGHT,
     IRQ_ENABLE,
     IRQ_STATUS,
     MEMORY_POINTERS,
@@ -26,6 +27,8 @@ from c64.vic_ii import (
     SPRITE_PRIORITY,
     SPRITE_X_EXPANSION,
     SPRITE_Y_EXPANSION,
+    TEXT_COLS,
+    TEXT_ROWS,
     VicII,
 )
 
@@ -151,7 +154,7 @@ def test_render_frame_fills_border_and_draws_one_character(vic):
     vic.write_register(MEMORY_POINTERS, 0x12)  # matrix @ $0400, chars @ $0800
     vic.write_register(BORDER_COLOR, 14)
     vic.write_register(BACKGROUND_COLOR0, 6)
-    vic.write_register(CONTROL1, 0x10 | 0x08)  # DEN=1, RSEL=1 (25 rows)
+    vic.write_register(CONTROL1, 0x10 | 0x08 | 0x03)  # DEN=1, RSEL=1, YSCROLL=3 (real neutral default)
     vic.write_register(CONTROL2, 0x08)  # CSEL=1 (40 cols)
 
     bus.mem[0x0400] = 65  # screen code 65 at row 0, col 0
@@ -165,6 +168,32 @@ def test_render_frame_fills_border_and_draws_one_character(vic):
         assert frame[BORDER_Y][x] == 5  # char's first pixel row: foreground
     for x in range(BORDER_X, BORDER_X + 8):
         assert frame[BORDER_Y + 1][x] == 6  # second pixel row: char data is 0 -> background
+
+
+def test_yscroll_at_the_real_default_does_not_clip_the_bottom_row():
+    # Regression test: at YSCROLL=3 (the real KERNAL's own default --
+    # confirmed empirically in Phase 4, $D011=$1B), all 25 rows must
+    # render fully. An earlier bug treated raw y_scroll as the pixel
+    # shift instead of (y_scroll - 3), pushing the bottom row's last 3
+    # scanlines past the display boundary and silently dropping them --
+    # caught from a real screenshot of a full, scrolled screen.
+    vic = VicII()
+    bus = FakeBus()
+    vic.write_register(MEMORY_POINTERS, 0x12)
+    vic.write_register(BACKGROUND_COLOR0, 6)
+    vic.write_register(CONTROL1, 0x10 | 0x08 | 0x03)  # DEN=1, RSEL=1, YSCROLL=3
+    vic.write_register(CONTROL2, 0x08)
+
+    last_row = TEXT_ROWS - 1
+    bus.mem[0x0400 + last_row * TEXT_COLS] = 65  # screen code 65 at the bottom row, col 0
+    bus.mem[0x0800 + 65 * 8 + 7] = 0xFF  # that char's LAST pixel row: all set
+    bus.color_ram[last_row * TEXT_COLS] = 5
+
+    frame = vic.render_frame(bus)
+
+    bottom_pixel_row = BORDER_Y + DISPLAY_HEIGHT - 1
+    for x in range(BORDER_X, BORDER_X + 8):
+        assert frame[bottom_pixel_row][x] == 5  # must be drawn, not clipped away
 
 
 def test_display_disabled_shows_background_only(vic):
@@ -263,7 +292,7 @@ def test_sprite_behind_display_is_hidden_by_foreground_pixels():
     vic = VicII()
     bus = FakeBus()
     vic.write_register(MEMORY_POINTERS, 0x12)
-    vic.write_register(CONTROL1, 0x10 | 0x08)
+    vic.write_register(CONTROL1, 0x10 | 0x08 | 0x03)  # YSCROLL=3 -- real neutral default, no vertical shift
     vic.write_register(CONTROL2, 0x08)
     bus.mem[0x0400] = 65
     bus.mem[0x0800 + 65 * 8] = 0xFF  # character's first row: all foreground
@@ -309,7 +338,7 @@ def test_sprite_background_collision_sets_register_and_fires_irq():
     vic = VicII()
     bus = FakeBus()
     vic.write_register(MEMORY_POINTERS, 0x12)
-    vic.write_register(CONTROL1, 0x10 | 0x08)
+    vic.write_register(CONTROL1, 0x10 | 0x08 | 0x03)  # YSCROLL=3 -- real neutral default, no vertical shift
     vic.write_register(CONTROL2, 0x08)
     bus.mem[0x0400] = 65
     bus.mem[0x0800 + 65 * 8] = 0xFF
