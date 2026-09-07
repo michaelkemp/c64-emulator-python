@@ -1,40 +1,59 @@
-"""Reliable programmatic text entry into `KeyboardMatrix`, timed in
-simulated video frames rather than wall-clock time.
+"""Reliable programmatic text entry into `KeyboardMatrix`, timed in real
+emulated PHI2 cycles rather than wall-clock time or simulated frames.
 
 Why this exists: driving `KeyboardMatrix` from real pygame KEYDOWN/KEYUP
 events (`keyboard.py`) works for live human typing, but the main loop
 (`scripts/run_c64.py`) only drains the event queue once per simulated
 video frame -- a real keypress fast enough that its down *and* up both
-land within one frame's wall-clock duration (which can be tens of
-milliseconds on this project's current, unoptimized performance profile
--- see `docs/machine.md`) nets out to a press the emulated KERNAL never
-actually sees. `AutoTyper` sidesteps this entirely by holding each key
-for a fixed number of *simulated* frames, decoupled from host speed or
-real typing speed -- the same technique this project's own validation
-scripts (e.g. Phase 9's "type HELLO" check) already used by hand.
+land within one frame's wall-clock duration nets out to a press the
+emulated KERNAL never actually sees. `AutoTyper` sidesteps this by
+holding each key for a fixed number of PHI2 cycles -- reliable
+regardless of real typing speed.
+
+**Revision history worth knowing about**: the first version of this
+timed itself in simulated *video frames* (`pump()`, no argument, called
+once per iteration of `run_c64.py`'s main loop) at 4 hold + 2 gap frames
+per character. That's reliable but was measured at ~1 character per
+second in practice -- because each "frame" in that loop pays the full
+cost of CPU+chip emulation *and* screen rendering *and* audio generation
+*and* event polling, not just the minimum needed to satisfy the real
+KERNAL's keyboard scan. Measured empirically (not guessed) against the
+real KERNAL's own `GETIN` routine: a key held for as few as ~6000 PHI2
+cycles (roughly a third of one video frame's worth) already registers
+reliably, and gaps as short as ~2000-4000 cycles are enough to
+distinguish a released-then-repressed *same* key from one held
+continuously -- with some quantization noise near the low end from
+aligning with the KERNAL's own ~17000-cycle scan period. `HOLD_CYCLES`/
+`GAP_CYCLES` below use a safety margin above those measured minimums,
+verified against real multi-character sequences including same-key
+repeats ("AABBCC", "ABABAB"). `advance(cycles)` replaces `pump()`,
+matching this project's established `tick(cycles)` shape
+(`CIA6526`/`VicII`/`AudioOutput`) -- callers drive it with the same
+cycle count `Machine.step()` returns, and critically should do so in a
+tight loop *without* paying per-step render/audio/event costs while
+`busy` (see `scripts/run_c64.py`), which is where the real speedup comes
+from -- not from cutting the hold/gap durations alone.
 
 Covers what a simple BASIC test program needs: letters, digits, space,
 RETURN, and common punctuation -- including the shifted symbols
 (`"`, `(`, `)`, `!`, `&`, `'`, `<`, `>`, `?`), verified empirically the
 same way `KeyboardMatrix.KEY_POSITIONS` was (see docs/cia.md), not
-guessed. An earlier version of this table omitted `<`/`>`/`?` entirely;
-they were silently dropped from typed text rather than raising, which is
-by design for genuinely unmappable characters (a stray Unicode curly
-quote from a paste shouldn't abort the whole thing) -- but for `<`/`>`
-specifically it silently corrupted real BASIC (`IF X<24` typed as
-`IF X24`), caught by actually running the typed program, not just
-inspecting the mapping table.
+guessed.
 """
 
 from __future__ import annotations
 
 from c64.keyboard_matrix import KeyboardMatrix
 
-HOLD_FRAMES = 4
-GAP_FRAMES = 2
+# Empirically measured minimums (see module docstring): hold >=6000,
+# gap >=2000-4000 with some quantization noise near the low end. These
+# use a comfortable safety margin above that, verified against real
+# multi-character sequences via the KERNAL's own GETIN routine.
+HOLD_CYCLES = 8_000
+GAP_CYCLES = 20_000
 
-# Verified empirically (Phase "quick BASIC input" session), the same way
-# as KEY_POSITIONS: SHIFT + this key produces these on real hardware.
+# Verified empirically, the same way as KEY_POSITIONS: SHIFT + this key
+# produces these on real hardware.
 _SHIFTED = {
     '"': "2", "(": "8", ")": "9", "!": "1", "&": "6", "'": "7",
     "<": "COMMA", ">": "PERIOD", "?": "SLASH",
@@ -68,19 +87,20 @@ class AutoTyper:
         self._held: list[str] = []
 
     def type_text(self, text: str) -> None:
-        """Queue text to be typed; does not block -- call `pump()` once
-        per simulated frame to actually advance it."""
+        """Queue text to be typed; does not block -- call `advance()`
+        with real elapsed cycles to actually advance it."""
         self._queue.extend(text)
 
     @property
     def busy(self) -> bool:
         return bool(self._queue) or self._phase != "idle"
 
-    def pump(self) -> None:
-        """Advance by exactly one simulated video frame."""
+    def advance(self, cycles: int) -> None:
+        """Feed in the cycle count from a `Machine.step()` call -- same
+        shape as `CIA6526.tick`/`VicII.tick`/`AudioOutput.advance`."""
         if self._phase == "holding":
-            self._counter += 1
-            if self._counter >= HOLD_FRAMES:
+            self._counter += cycles
+            if self._counter >= HOLD_CYCLES:
                 for name in self._held:
                     self.keyboard.release_key(name)
                 self._held = []
@@ -88,8 +108,8 @@ class AutoTyper:
                 self._counter = 0
             return
         if self._phase == "gap":
-            self._counter += 1
-            if self._counter >= GAP_FRAMES:
+            self._counter += cycles
+            if self._counter >= GAP_CYCLES:
                 self._phase = "idle"
                 self._counter = 0
             return

@@ -268,15 +268,22 @@ Summary:
       typing turned out to be less than rock solid; root cause was
       `run_c64.py`'s event loop only draining keyboard events once per
       simulated frame, so a fast real keypress can land entirely within
-      one frame and never reach the emulated KERNAL. `AutoTyper` types
-      at a fixed simulated-frame pace instead of real time, wired up via
+      one frame and never reach the emulated KERNAL. `AutoTyper` types by
+      holding each key for a fixed number of PHI2 cycles, wired up via
       `run_c64.py --type-file` and Ctrl+V (real clipboard, via
-      `pygame.scrap`, verified against a live X11 clipboard). Caught a
-      real bug before shipping (`<`/`>`/`?` entirely missing from the
-      character table, silently corrupting real BASIC) and, while
-      verifying the two example programs by actually running them, a
-      real bug in the example program itself (not the emulator) — see
-      `docs/roadmap.md`'s post-Phase-10 addendum.
+      `pygame.scrap`, verified against a live X11 clipboard). **First
+      landing measured at ~1 char/sec in practice — caught, diagnosed,
+      and actually fixed, not excused**: the main loop now fast-forwards
+      through typing (skips per-step render/audio, the dominant cost),
+      and the hold/gap durations were re-measured against the real
+      KERNAL's own `GETIN` instead of guessed, cutting them from
+      ~78,624 cycles to a verified-reliable ~8,000/20,000. Result,
+      measured on the real `sound_test.bas`: **920ms/char → 53.8ms/char
+      (~17x)**. Also caught a real bug before shipping (`<`/`>`/`?`
+      missing from the character table, silently corrupting real BASIC)
+      and, while verifying the two example programs by actually running
+      them, a real bug in the example program itself (not the emulator)
+      — see `docs/roadmap.md`'s post-Phase-10 addendum.
 - Next up: storage (Phase 11)
 
 ## Reference documentation

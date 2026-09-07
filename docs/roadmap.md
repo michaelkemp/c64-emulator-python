@@ -434,21 +434,44 @@ documented, unoptimized performance profile) nets out to a press the
 emulated KERNAL never actually sees.
 
 - [x] `src/peripherals/auto_type.py` — `AutoTyper`: types text reliably
-      by holding each key for a fixed number of *simulated* frames
-      (decoupled from host speed or real typing speed) instead of
-      relying on real-time keypress events -- the same technique this
-      project's own validation scripts had already used by hand since
-      Phase 9. Covers letters, digits, space, RETURN, and common
-      punctuation, including shifted symbols (`"`, `(`, `)`, `!`, `&`,
-      `'`, `<`, `>`, `?`) verified empirically the same way
-      `KeyboardMatrix.KEY_POSITIONS` was, not guessed.
+      by holding each key for a fixed number of PHI2 cycles (decoupled
+      from host speed or real typing speed) instead of relying on
+      real-time keypress events -- the same technique this project's own
+      validation scripts had already used by hand since Phase 9. Covers
+      letters, digits, space, RETURN, and common punctuation, including
+      shifted symbols (`"`, `(`, `)`, `!`, `&`, `'`, `<`, `>`, `?`)
+      verified empirically the same way `KeyboardMatrix.KEY_POSITIONS`
+      was, not guessed.
+      **Measured too slow in practice on first landing, then actually
+      fixed, not just excused**: the first version timed itself in
+      *simulated video frames* (one `pump()` per iteration of
+      `run_c64.py`'s main loop), which the user found measured at ~1
+      character/second -- because every frame pays the full cost of
+      CPU+chip emulation *and* screen rendering *and* audio generation
+      *and* event polling (131ms/frame measured), not just the minimum
+      the KERNAL's keyboard scan actually needs. Fixed two ways: (1)
+      `advance(cycles)` replaces `pump()` (same shape as `CIA6526.tick`/
+      `VicII.tick`), and `run_c64.py` now fast-forwards through typing --
+      driving `Machine.step()` directly and skipping render/audio
+      entirely while `AutoTyper.busy` (audio briefly off too, since SID
+      ticking is the single most expensive part of a step); (2) the
+      hold/gap durations themselves were re-measured against the real
+      KERNAL's own `GETIN` (not guessed): a key registers reliably from
+      as few as ~6000 cycles held, not the ~78,624 cycles the "4 video
+      frames" version was actually using -- verified against same-key
+      repeats ("AABBCC", "ABABAB") and longer sequences before trusting
+      the new, much smaller values. Combined result, measured on the real
+      `sound_test.bas`: **920ms/char → 53.8ms/char (~17x)** -- the whole
+      514-character program now types in ~28s instead of an extrapolated
+      ~6 minutes. Still not instant on this project's documented,
+      unoptimized performance profile, but genuinely practical now.
 - [x] `scripts/run_c64.py --type-file program.bas` types a file in
       automatically once boot has settled at the READY prompt.
       Ctrl+V pastes the real system clipboard's text the same reliable
       way, at any point, via `pygame.scrap` (verified for real against a
       live X11 clipboard set with `xclip` on the machine this was
       developed on, not just headlessly).
-- [x] `tests/peripherals/test_auto_type.py` — 8 tests. Caught a real bug
+- [x] `tests/peripherals/test_auto_type.py` — 9 tests. Caught a real bug
       before it shipped: `<`, `>`, and `?` were entirely missing from the
       character table, silently dropped (by design, for genuinely
       unmappable characters) rather than raising -- but for `<`/`>`

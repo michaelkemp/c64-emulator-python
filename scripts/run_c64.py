@@ -19,15 +19,22 @@ the Phase 8/9 behavior back if the gaps bother you more than the sound
 is worth.
 
 Typing a BASIC program reliably: live human keystrokes can be less than
-rock solid here (see peripherals/auto_type.py for why -- the short
-version: this main loop only drains keyboard events once per simulated
-video frame, so a fast enough real keypress can land entirely within one
-frame and never reach the emulated KERNAL). Two alternatives, both using
-`AutoTyper` to type at a fixed, simulated-frame pace instead:
+rock solid here (see peripherals/auto_type.py for why). Two
+alternatives, both using `AutoTyper`:
   - `--type-file program.bas` types that file's contents automatically
     once boot has settled at the READY prompt.
   - Ctrl+V pastes the real clipboard's text the same reliable way, at
     any point (e.g. once you're already sitting at a prompt).
+While `AutoTyper` is busy, this loop fast-forwards -- driving the CPU
+directly and skipping the per-step render/audio cost that made an
+earlier version of this feature measure at ~1 character/second in
+practice (audio briefly off during the burst too, since SID ticking is
+the single most expensive part of a step -- see docs/machine.md). Still
+not instant on this project's current, unoptimized performance profile,
+but a real BASIC program should now take low tens of seconds rather than
+minutes. The screen updates periodically (not per keystroke) during a
+long paste so it doesn't look frozen, and the window stays responsive to
+being closed.
 
 Usage:
     scripts/stage_roms.sh   # once, if you haven't already
@@ -40,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import pygame
@@ -58,6 +66,11 @@ from peripherals.screen import CYCLES_PER_FRAME, Screen  # noqa: E402
 # docs/roadmap.md's Phase 4/7 notes) -- how long --type-file waits before
 # it starts, so keystrokes don't land during boot and go unseen.
 BOOT_SETTLE_FRAMES = 150
+
+# How often (wall-clock seconds) the fast-forward typing loop checks for
+# window-close events and redraws the screen, so a long paste doesn't
+# look frozen or become unclosable.
+TYPING_UI_CHECK_INTERVAL = 0.1
 
 
 def _clipboard_text() -> str | None:
@@ -109,18 +122,34 @@ def main() -> None:
                 else:
                     keyboard.handle_event(event, machine)
 
-            total = carry
-            while total < CYCLES_PER_FRAME:
-                cycles = machine.step()
-                total += cycles
-                if audio is not None:
-                    audio.advance(cycles)
-            carry = total - CYCLES_PER_FRAME
-
             frame_count += 1
             if program_text is not None and frame_count == BOOT_SETTLE_FRAMES:
                 auto_typer.type_text(program_text)
-            auto_typer.pump()
+
+            if auto_typer.busy:
+                was_audio_enabled = machine.enable_audio
+                machine.enable_audio = False
+                last_ui_check = time.perf_counter()
+                while auto_typer.busy and running:
+                    auto_typer.advance(machine.step())
+                    now = time.perf_counter()
+                    if now - last_ui_check > TYPING_UI_CHECK_INTERVAL:
+                        for event in pygame.event.get():
+                            if event.type == pygame.QUIT:
+                                running = False
+                        screen.draw(machine.vic.render_frame(machine.bus))
+                        screen.tick()
+                        last_ui_check = now
+                machine.enable_audio = was_audio_enabled
+                carry = 0  # resume normal per-frame cadence fresh after the burst
+            else:
+                total = carry
+                while total < CYCLES_PER_FRAME:
+                    cycles = machine.step()
+                    total += cycles
+                    if audio is not None:
+                        audio.advance(cycles)
+                carry = total - CYCLES_PER_FRAME
 
             screen.draw(machine.vic.render_frame(machine.bus))
             screen.tick()
