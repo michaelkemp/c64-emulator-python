@@ -384,12 +384,42 @@ together from real elapsed cycles, with real interrupt delivery.
   confirmed via the actual `Screen` pipeline, the same standard of proof
   as every prior phase.
 
-## Phase 10 — Audio output (not started)
+## Phase 10 — Audio output (done, with an honest caveat)
 
-- [ ] Feed `Sid.output_sample()` to real audio output (pygame's mixer).
-- [ ] `Machine` needs real wall-clock pacing once this exists — running
-      as fast as Python allows (fine for screen-only operation) makes
-      audio pitch/timing wrong.
+- [x] `src/peripherals/audio.py` — `AudioOutput`: feeds `Sid.output_sample()`
+      to real audio output via pygame's mixer. `advance(cycles)` takes
+      the exact same cycle count `Machine.step()` returns (same shape as
+      `CIA6526.tick`/`VicII.tick`), accumulates PHI2 cycles, and samples
+      `Sid` once every `cycles_per_sample` (`PAL_CLOCK_HZ` ÷ the output
+      rate) -- so pitch is genuinely correct, tied to real emulated
+      cycles rather than wall-clock time, regardless of how fast this
+      process actually runs them. Chunks default to one video frame's
+      worth of samples (`samples_per_frame`), queued/played on a
+      `pygame.mixer.Channel`.
+- [x] `scripts/run_c64.py` now enables audio by default (`--no-audio` to
+      opt out) and calls `AudioOutput.advance()` alongside the existing
+      per-frame `Machine.step()` loop.
+- [x] `Machine` wall-clock pacing: **deliberately not built**, and said so
+      plainly rather than silently skipped. The original plan (back when
+      Phase 8 was scoped) assumed real-time pacing would be needed once
+      audio existed; in practice, `docs/machine.md`'s own profiling shows
+      this project's unoptimized pure-Python core runs *slower* than real
+      time once SID ticking is on (the most expensive of the four ticked
+      chips) -- so throttling *down* to real-time wouldn't help; the
+      bottleneck is generation being too slow, not too fast. Consequence,
+      stated honestly: sustained audio playback can have audible gaps
+      under load on hardware this slow. A dedicated speed effort (already
+      explicitly deferred once, in Phase 8) is what would actually fix
+      this, not pacing logic.
+- [x] `tests/peripherals/test_audio.py` — 5 tests, headless via SDL's
+      dummy audio driver (`SDL_AUDIODRIVER=dummy`), gated behind
+      `pytest.importorskip("pygame")`.
+- Verified with a real integration check (run manually this session, not
+  committed as a test): a tiny genuine 6502 program (this project's own
+  assembler) pokes a real SID voice for a 440Hz note, run through the
+  actual `Machine` + `AudioOutput` production pipeline (not direct `Sid`
+  calls, unlike the Phase 6 check) -- zero-crossing counting on the
+  captured samples measured **exactly 440.0Hz**.
 
 ## Phase 11 — Storage: disk + cartridge (not started)
 

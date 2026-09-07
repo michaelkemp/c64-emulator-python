@@ -165,10 +165,11 @@ src/
                         # a runtime dependency.
     screen.py              # pygame window showing VicII output (Phase 8)
     keyboard.py            # real key events -> KeyboardMatrix (Phase 9)
+    audio.py               # Sid.output_sample() -> pygame.mixer (Phase 10)
 tests/
   emulator/             # CPU core tests (ported)
   asm/                  # assembler tests (ported, one adapted)
-  peripherals/          # Screen + Keyboard tests -- gated behind pytest.importorskip
+  peripherals/          # Screen + Keyboard + Audio tests -- gated behind pytest.importorskip
   c64/                  # Bus + CpuPort + CIA + keyboard/joystick + VIC-II + SID + Machine tests
 ```
 
@@ -246,8 +247,19 @@ Summary:
       `HELLO`+`RETURN` via simulated key events through the real
       KERNAL+BASIC produces the exact real response
       (`?SYNTAX  ERROR`) — see `docs/roadmap.md`'s Phase 9.
-- Next up: audio (Phase 10, needs real wall-clock pacing), then storage
-  (Phase 11)
+- [x] **Phase 10** — audio output (`src/peripherals/audio.py`) — `Sid.
+      output_sample()` fed to pygame's mixer, sampled once every real
+      PHI2-cycles-per-sample period so pitch is genuinely correct
+      regardless of host speed; verified end-to-end through the actual
+      `Machine`+`AudioOutput` pipeline (not direct `Sid` calls) at
+      **exactly 440.0Hz** for a real 440Hz note poke. Honest caveat, not
+      swept under the rug: no wall-clock pacing was added, because
+      profiling shows this project's core runs *slower* than real time
+      once audio's on — pacing wouldn't fix that, a speed effort would,
+      and one was already explicitly deferred once (Phase 8). Sustained
+      playback can have audible gaps under load as a documented
+      consequence — see `docs/roadmap.md`'s Phase 10.
+- Next up: storage (Phase 11)
 
 ## Reference documentation
 
