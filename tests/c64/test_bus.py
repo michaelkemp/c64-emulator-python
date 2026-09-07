@@ -153,6 +153,57 @@ def test_rom_size_is_validated():
         Bus(basic_rom=b"\x00" * 100)
 
 
+def test_vic_bank_defaults_to_bank_0_without_a_cia2(bus):
+    assert bus.vic_bank_base() == 0x0000
+
+
+def test_vic_bank_follows_cia2_port_a_bits_inverted():
+    cia2 = FakeChip(0x10)
+    bus = Bus(cia2=cia2)
+    cia2.registers[0] = 0b11  # bank 0
+    assert bus.vic_bank_base() == 0x0000
+    cia2.registers[0] = 0b10  # bank 1
+    assert bus.vic_bank_base() == 0x4000
+    cia2.registers[0] = 0b01  # bank 2
+    assert bus.vic_bank_base() == 0x8000
+    cia2.registers[0] = 0b00  # bank 3
+    assert bus.vic_bank_base() == 0xC000
+
+
+def test_read_vic_sees_ram_independent_of_cpu_bank_switching():
+    # CPU sees BASIC ROM at $A000 by default. Point the VIC-II at bank 2
+    # ($8000-$BFFF, via CIA2) so its offset $2000 aliases the very same
+    # physical address -- it should see the RAM underneath the ROM there,
+    # a genuinely different view of the same address.
+    cia2 = FakeChip(0x10)
+    cia2.registers[0] = 0b01  # bank 2
+    bus = Bus(basic_rom=make_rom(0x2000, 0xB0), cia2=cia2)
+
+    bus.write8(0xA000, 0x42)  # lands in RAM regardless of what's banked in
+    assert bus.read8(0xA000) == 0xB0  # CPU: ROM
+    assert bus.read_vic(0x2000) == 0x42  # VIC-II (bank 2, offset $2000 = $A000): RAM
+
+
+def test_read_vic_substitutes_char_rom_only_at_1000_in_banks_0_and_2():
+    char_rom = make_rom(0x1000, 0xC0)
+    cia2 = FakeChip(0x10)
+    bus = Bus(char_rom=char_rom, cia2=cia2)
+
+    cia2.registers[0] = 0b11  # bank 0 ($0000): char ROM visible at $1000-$1FFF
+    assert bus.read_vic(0x1000) == 0xC0
+    bus.write8(0x1000, 0x99)  # underlying RAM write, hidden behind the ROM view
+    assert bus.read_vic(0x1000) == 0xC0
+
+    cia2.registers[0] = 0b10  # bank 1 ($4000): no char ROM substitution at all
+    assert bus.read_vic(0x1000) != 0xC0
+
+
+def test_read_color_nibble_reads_the_low_nibble_directly():
+    bus = Bus()
+    bus.write8(0xD800, 0xAB)
+    assert bus.read_color_nibble(0) == 0x0B
+
+
 def test_read16_write16_and_load_match_flat_memory_semantics(bus):
     bus.write16(0x0400, 0xBEEF)
     assert bus.read16(0x0400) == 0xBEEF

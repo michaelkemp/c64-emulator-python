@@ -130,14 +130,34 @@ BASIC port and hardware-build docs (specific to that board).
 - Reference: MOS 6526 CIA preliminary datasheet —
   [6502.org](https://6502.org/documents/datasheets/mos/mos_6526_cia_preliminary_nov_1981.pdf).
 
-## Phase 4 — VIC-II, text mode only (not started)
+## Phase 4 — VIC-II, text mode only (done)
 
-- [ ] Just enough to get BASIC's screen visible: standard character mode,
-      the video matrix/color RAM relationship, border/background colors.
-      Deliberately *not* cycle-accurate yet (no badlines, no sprite
-      timing) — get something on screen before chasing timing precision.
-- [ ] **`docs/vic-ii.md`** — start it here (register map, text-mode
-      behavior); it'll grow in Phase 5 rather than becoming a second file.
+- [x] `src/c64/vic_ii.py` — `VicII`: the full register file (sprite
+      registers stored but inert -- Phase 5), the `$D011`/raster-compare
+      dual-purpose-bit quirk, the interrupt register's write-1-to-clear
+      semantics (notably *not* the CIAs' read-clears-all), and standard
+      character-mode rendering (`render_frame`) into an indexed pixel
+      grid, honoring `DEN`/`RSEL`/`CSEL`/`XSCROLL`/`YSCROLL`.
+- [x] `Bus.read_vic`/`Bus.vic_bank_base`/`Bus.read_color_nibble` — the
+      VIC-II's own bank-switched view of memory (selected by CIA2, not
+      the CPU's LORAM/HIRAM/CHAREN), including the hardwired character-ROM
+      substitution at `$1000`/`$9000` in banks 0/2. See `docs/vic-ii.md`.
+- [x] `tests/c64/test_vic_ii.py` plus `Bus` tests for the new memory-view
+      methods, and a real integration check (run manually this session,
+      not committed as a test): running the genuine KERNAL+BASIC ROMs
+      unmodified for 3,000,000 instructions through the full
+      CPU+Bus+CIA1+CIA2+VIC-II stack produces `$D011=$1B`,
+      `$D018=$14` (matrix `$0400`, chars `$1000`), border color 14,
+      background color 6 -- all the well-known real C64 defaults -- and
+      `render_frame` of that state, saved as a PNG, shows the actual
+      readable text `**** COMMODORE 64 BASIC V2 ****` /
+      `64K RAM SYSTEM  38911 BASIC BYTES FREE` / `READY.`: the real,
+      iconic C64 boot screen, from genuine ROM content, none of it
+      hand-tuned to match.
+- [x] **`docs/vic-ii.md`** — register map, the VIC-II's-own-memory-view
+      explanation, and this phase's known gaps (no sprites/bitmap/ECM, not
+      cycle-accurate, approximate border geometry and palette). Will grow
+      in Phase 5.
 - Reference: Christian Bauer's cycle-by-cycle reverse-engineering
   article — [cebix.net/VIC-Article.txt](https://www.cebix.net/VIC-Article.txt)
   — plus the official preliminary MOS 6567 datasheet —

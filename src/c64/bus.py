@@ -163,6 +163,29 @@ class Bus:
         for offset, byte in enumerate(data):
             self.write8(address + offset, byte)
 
+    def vic_bank_base(self) -> int:
+        """The base address of the 16KB window the VIC-II currently sees,
+        selected by CIA2 port A bits 0-1 -- see docs/vic-ii.md for the
+        (inverted) encoding. Defaults to bank 0 if no CIA2 is attached,
+        matching a detached port's own all-1s reset state."""
+        bits = self.cia2.read_register(0) & 0x03 if self.cia2 is not None else 0x03
+        return (3 - bits) * 0x4000
+
+    def read_vic(self, address: int) -> int:
+        """How the VIC-II sees memory: relative to its own 16KB bank, not
+        the CPU's LORAM/HIRAM/CHAREN view -- with character ROM hardwired
+        into view whenever that lands on $1000-$1FFF of banks 0 or 2, per
+        docs/vic-ii.md."""
+        offset = address & 0x3FFF
+        bank_base = self.vic_bank_base()
+        if bank_base in (0x0000, 0x8000) and 0x1000 <= offset <= 0x1FFF and self.char_rom is not None:
+            return self.char_rom[offset - 0x1000]
+        return self._ram[(bank_base + offset) & 0xFFFF]
+
+    def read_color_nibble(self, index: int) -> int:
+        """Color RAM, as the VIC-II sees it directly (not bank-switched)."""
+        return self._color_ram[index & (len(self._color_ram) - 1)]
+
     def _read_io_window(self, address: int) -> int:
         if not self.port.charen:
             if self.char_rom is not None:

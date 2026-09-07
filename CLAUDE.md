@@ -129,9 +129,9 @@ docs/
   6502-reference.md     # condensed 6502 ISA notes (ported as-is)
   testing-strategy.md   # how correctness gets validated, incl. license discipline
   cia.md                # CIA register map + behavior (Phase 3)
-  vic-ii.md, sid.md     # one per remaining chip, written as each is
-                        # implemented -- see "Documentation convention" above.
-                        # Don't exist yet.
+  vic-ii.md             # VIC-II register map + text-mode behavior (Phase 4)
+  sid.md                # written when SID is implemented (Phase 6) -- see
+                        # "Documentation convention" above. Doesn't exist yet.
 scripts/
   fetch_dormann_tests.sh # fetches the GPLv3 Klaus Dormann suite, not vendored
   stage_roms.sh          # stages the user's own local C64 ROMs into
@@ -147,10 +147,12 @@ src/
     cia.py                 # MOS 6526 CIA: ports, timers, TOD, ICR (Phase 3)
     keyboard_matrix.py      # 8x8 key matrix + CIA1 port coupling (Phase 3)
     joystick.py             # digital joystick (Phase 3)
+    vic_ii.py               # MOS 6567/6569 VIC-II: registers + text-mode
+                             # rendering (Phase 4)
 tests/
   emulator/             # CPU core tests (ported)
   asm/                  # assembler tests (ported, one adapted)
-  c64/                  # Bus + CpuPort + CIA + keyboard/joystick tests
+  c64/                  # Bus + CpuPort + CIA + keyboard/joystick + VIC-II tests
 ```
 
 ## Status / roadmap
@@ -174,7 +176,13 @@ Summary:
       coupling; verified against the real KERNAL, which initializes
       CIA1/CIA2 exactly as documented when run unmodified; see
       `docs/roadmap.md`'s Phase 3 and `docs/cia.md`
-- [ ] **Phase 4** — VIC-II, text mode only (get BASIC's screen visible)
+- [x] **Phase 4** — VIC-II, text mode only (`src/c64/vic_ii.py`) — the
+      VIC-II's own bank-switched memory view (`Bus.read_vic`), standard
+      character-mode rendering; verified by running the real KERNAL+BASIC
+      unmodified and rendering the result: it produces the exact, iconic
+      real C64 boot screen (`**** COMMODORE 64 BASIC V2 ****` etc.) from
+      genuine ROM content; see `docs/roadmap.md`'s Phase 4 and
+      `docs/vic-ii.md`
 - [ ] **Phase 5** — VIC-II sprites + cycle-accurate raster timing
 - [ ] **Phase 6** — SID
 
