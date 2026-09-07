@@ -39,9 +39,18 @@ license** — read the real license file/text yourself rather than trusting
 a README's claim, and default to fetch-on-demand (gitignored, a script in
 `scripts/`) when in doubt. This applies directly to:
 
-- **Commodore's ROMs** — see `docs/roadmap.md`'s Phase 1 (ROM licensing
-  research is a prerequisite to writing any chip code, not an
-  afterthought).
+- **Commodore's ROMs** — resolved in `docs/roadmap.md`'s Phase 1: VICE's
+  commonly-cited "blanket permission" from Commodore turned out to be
+  unverifiable community lore, not a real license (confirmed independently
+  via Debian's own `vice` package, which strips the ROMs from its source
+  entirely for exactly this reason, and via outside research). This repo
+  therefore never fetches or vendors the original ROMs itself.
+  `scripts/stage_roms.sh` only *stages* ROMs the user already has locally
+  (e.g. from their own VICE install) into the gitignored `roms/c64/` —
+  acquiring a legitimate copy is the user's own responsibility. Clean-room
+  alternatives exist (`MEGA65/open-roms`, actually LGPLv3+MIT — verified by
+  reading its `LICENSE` file directly, not its README) but haven't been
+  evaluated for C64 completeness/compatibility yet.
 - **reSID** (GPL) — fine to read for understanding the SID's analog
   filter model; don't copy its code into this repo.
 - **VICE** (GPL) — fine to run/read as a reference implementation to

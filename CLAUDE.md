@@ -128,19 +128,29 @@ docs/
   roadmap.md            # phase checklist / detailed status tracker
   6502-reference.md     # condensed 6502 ISA notes (ported as-is)
   testing-strategy.md   # how correctness gets validated, incl. license discipline
-  cia.md, vic-ii.md, sid.md  # one per custom chip, written as each is
-                             # implemented -- see "Documentation convention" above.
-                             # Don't exist yet; nothing chip-specific is built yet.
+  cia.md                # CIA register map + behavior (Phase 3)
+  vic-ii.md, sid.md     # one per remaining chip, written as each is
+                        # implemented -- see "Documentation convention" above.
+                        # Don't exist yet.
 scripts/
   fetch_dormann_tests.sh # fetches the GPLv3 Klaus Dormann suite, not vendored
+  stage_roms.sh          # stages the user's own local C64 ROMs into
+                          # gitignored roms/c64/ -- never downloads ROMs
+                          # itself, see Phase 1 below
 src/
   c6502/                # ported CPU core + assembler -- see "What came over" above
     emulator/
     asm/
-  c64/                  # <-- the actual point of this repo. Nothing here yet.
+  c64/                  # <-- the actual point of this repo.
+    bus.py                # the real C64 memory map + bank-switching (Phase 2)
+    cpu_port.py            # the 6510's $00/$01 I/O port (Phase 2)
+    cia.py                 # MOS 6526 CIA: ports, timers, TOD, ICR (Phase 3)
+    keyboard_matrix.py      # 8x8 key matrix + CIA1 port coupling (Phase 3)
+    joystick.py             # digital joystick (Phase 3)
 tests/
   emulator/             # CPU core tests (ported)
   asm/                  # assembler tests (ported, one adapted)
+  c64/                  # Bus + CpuPort + CIA + keyboard/joystick tests
 ```
 
 ## Status / roadmap
@@ -149,11 +159,21 @@ See [docs/roadmap.md](docs/roadmap.md) for the detailed phase checklist.
 Summary:
 
 - [x] **Phase 0** — ported the CPU core + assembler from `c-compiler-6502`
-- [ ] **Phase 1** — ROM licensing research (do this before any chip code —
-      see `docs/roadmap.md`, this is genuinely unresolved, not a
-      formality)
-- [ ] **Phase 2** — the real C64 memory map + bank-switching `Bus`
-- [ ] **Phase 3** — CIA 1 & 2 (keyboard, timers)
+- [x] **Phase 1** — ROM licensing research: VICE's "blanket permission"
+      story is unverified lore, not a real license (confirmed via
+      Debian's own dfsg-stripped `vice` package and outside research); this
+      repo never fetches/vendors the original ROMs, `scripts/stage_roms.sh`
+      only stages ROMs the user already has locally into gitignored
+      `roms/c64/` — see `docs/roadmap.md`'s Phase 1 for the full writeup
+- [x] **Phase 2** — the real C64 memory map + bank-switching `Bus`
+      (`src/c64/bus.py`, `src/c64/cpu_port.py`) — verified against the
+      user's actual staged ROMs, boots to the genuine KERNAL reset routine
+      with zero CPU core changes; see `docs/roadmap.md`'s Phase 2
+- [x] **Phase 3** — CIA 1 & 2 (`src/c64/cia.py`, `keyboard_matrix.py`,
+      `joystick.py`) — ports, timers, TOD clock, ICR, keyboard/joystick
+      coupling; verified against the real KERNAL, which initializes
+      CIA1/CIA2 exactly as documented when run unmodified; see
+      `docs/roadmap.md`'s Phase 3 and `docs/cia.md`
 - [ ] **Phase 4** — VIC-II, text mode only (get BASIC's screen visible)
 - [ ] **Phase 5** — VIC-II sprites + cycle-accurate raster timing
 - [ ] **Phase 6** — SID
