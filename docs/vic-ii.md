@@ -6,6 +6,10 @@ badlines, no exact raster timing) -- see `docs/roadmap.md`'s Phase 4/5
 split. This file will grow in Phase 5 to cover sprites and the real
 cycle-by-cycle timing.
 
+![The real KERNAL+BASIC ROMs, booted unmodified through this project's
+CPU+Bus+CIA+VIC-II stack and rendered by `scripts/render_frame.py`
+-- the genuine C64 boot screen.](c64-boot-screen.png)
+
 Primary sources: Christian Bauer's cycle-by-cycle reverse-engineering
 article ([cebix.net/VIC-Article.txt](https://www.cebix.net/VIC-Article.txt))
 and the official preliminary MOS 6567 datasheet
