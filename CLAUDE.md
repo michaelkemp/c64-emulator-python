@@ -142,11 +142,13 @@ scripts/
                           # VIC-II's screen output (Phase 4)
   render_audio.py        # plays a test tone through the real SID stack
                           # and writes a WAV file (Phase 6)
+  run_c64.py             # boots the staged ROMs and shows the screen in
+                          # a real pygame window (Phase 8)
 src/
   c6502/                # ported CPU core + assembler -- see "What came over" above
     emulator/
     asm/
-  c64/                  # <-- the actual point of this repo.
+  c64/                  # <-- the actual point of this repo. Zero runtime deps.
     bus.py                # the real C64 memory map + bank-switching (Phase 2)
     cpu_port.py            # the 6510's $00/$01 I/O port (Phase 2)
     cia.py                 # MOS 6526 CIA: ports, timers, TOD, ICR (Phase 3)
@@ -158,10 +160,15 @@ src/
                              # filter (Phase 6)
     machine.py              # ties CPU+Bus+chips together, real cycle
                              # driving + interrupt delivery (Phase 7)
+  peripherals/          # real-world I/O bridges -- needs the "peripherals"
+                        # extra (pygame); the only part of this repo with
+                        # a runtime dependency.
+    screen.py              # pygame window showing VicII output (Phase 8)
 tests/
   emulator/             # CPU core tests (ported)
   asm/                  # assembler tests (ported, one adapted)
-  c64/                  # Bus + CpuPort + CIA + keyboard/joystick + VIC-II + SID tests
+  peripherals/          # Screen tests -- gated behind pytest.importorskip
+  c64/                  # Bus + CpuPort + CIA + keyboard/joystick + VIC-II + SID + Machine tests
 ```
 
 ## Status / roadmap
@@ -213,10 +220,20 @@ Summary:
       delivery; verified by booting the real KERNAL+BASIC and watching
       its own real jiffy-clock counter (`$A0`-`$A2`) actually increment
       once BASIC reaches its keyboard-wait loop — see `docs/roadmap.md`'s
-      Phase 7 and `docs/machine.md`. Next up: screen output (Phase 8,
-      first runtime dependency — pygame), then keyboard (Phase 9,
-      depends on Phase 8's window for event capture), then audio
-      (Phase 10, needs real wall-clock pacing), then storage (Phase 11)
+      Phase 7 and `docs/machine.md`.
+- [x] **Phase 8** — screen output (`src/peripherals/screen.py`,
+      `scripts/run_c64.py`) — pygame (this project's first runtime
+      dependency, via the new `peripherals` extra — the emulation core
+      stays dependency-free) displays `VicII.render_frame()` in a real
+      window, paced to ~50Hz; verified by running the real KERNAL+BASIC
+      through the actual `Screen.draw()` pipeline and confirming the
+      real boot screen renders correctly — see `docs/roadmap.md`'s
+      Phase 8. **Not yet confirmed on a real display** — this dev
+      environment has none; the user will verify `scripts/run_c64.py`
+      looks right on their own machine.
+- Next up: keyboard (Phase 9, depends on Phase 8's window for event
+  capture), then audio (Phase 10, needs real wall-clock pacing), then
+  storage (Phase 11)
 
 ## Reference documentation
 
@@ -240,11 +257,17 @@ vendored — pull specific facts as needed):
 
 ## Running tests
 
-Same setup as the sibling repo — no compiled/native dependencies, no
-runtime dependencies at all. `pyproject.toml` sets `pythonpath = ["src"]`
-so `pytest` finds the packages directly from source; `pip install
--e ".[dev]"` is convenient for an interactive `python3` shell but not
-required just to run tests.
+The emulation core (`src/c64/`, `src/c6502/`) has no compiled/native or
+runtime dependencies at all -- that's still true. `src/peripherals/`
+(real screen/keyboard/audio/disk I/O, Phase 8 onward) is the one
+exception: it needs this project's `peripherals` extra (currently
+pygame). Its tests (`tests/peripherals/`) are gated behind
+`pytest.importorskip(...)`, so the base suite still passes with nothing
+but `pytest` installed. `pyproject.toml` sets `pythonpath = ["src"]` so
+`pytest` finds the packages directly from source; `pip install -e
+".[dev]"` (add `,peripherals` to also exercise `src/peripherals/`) is
+convenient for an interactive `python3` shell but not required just to
+run the core tests.
 
 ```
 pytest                            # fast suite

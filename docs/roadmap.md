@@ -303,15 +303,44 @@ together from real elapsed cycles, with real interrupt delivery.
   delivers it, the real KERNAL IRQ handler runs and does its real job,
   and execution correctly resumes afterward.
 
-## Phase 8 — Screen output (not started)
+## Phase 8 — Screen output (done)
 
-- [ ] A `peripherals/` package (new top-level concern, separate from the
-      pure emulation core in `src/c64/`) with a `screen.py` that displays
-      `VicII.render_frame()` in a real window, refreshed at the real PAL
-      rate `Machine` now produces.
-- [ ] This project's first runtime dependency: **pygame** (user's
-      choice — also covers keyboard events for Phase 9 and audio output
-      for Phase 10, avoiding three separate libraries).
+- [x] `src/peripherals/screen.py` — `Screen`: a pygame window displaying
+      `VicII.render_frame()`, scaled and capped to ~50Hz. Lives in a new
+      `src/peripherals/` package (a "peripherals" extra in
+      `pyproject.toml` — `pip install -e ".[peripherals]"`), kept
+      strictly separate from the emulation core in `src/c64/`, which
+      still has zero runtime dependencies. **pygame** is this project's
+      first-ever runtime dependency (user's choice — also covers keyboard
+      events for Phase 9 and audio output for Phase 10, avoiding three
+      separate libraries).
+- [x] Real-time pacing "almost for free": `scripts/run_c64.py` runs the
+      `Machine` for exactly one PAL frame's worth of cycles
+      (`CYCLES_PER_FRAME`) between each display update, and caps the
+      display to ~50Hz -- not the dedicated wall-clock pacing
+      `docs/machine.md` still flags as missing (that's Phase 10, once
+      real audio needs genuinely precise timing), but good enough to
+      watch the screen update at approximately real C64 speed.
+- [x] `tests/peripherals/test_screen.py` — 6 tests, run headlessly via
+      SDL's dummy video driver (`SDL_VIDEODRIVER=dummy`, standard
+      technique for testing pygame code without a real display), gated
+      behind `pytest.importorskip("pygame")` so the base test suite
+      still runs with zero dependencies installed. Caught a real bug:
+      `pygame.transform.scale`'s in-place destination form requires the
+      source and destination surfaces to already share a pixel format,
+      which isn't guaranteed -- fixed by scaling to a new surface and
+      blitting instead (blit converts formats automatically).
+- Verified with a real integration check (run manually this session, not
+  committed as a test, reproducible via `scripts/run_c64.py`): running
+  the real KERNAL+BASIC through `Machine` for 160 simulated PAL frames
+  and drawing each one through the actual `Screen.draw()` pipeline (not
+  just the underlying pixel-index arrays `VicII.render_frame()` returns)
+  produces the exact real C64 boot screen when saved and viewed -- this
+  is the first phase whose validation exercises the literal code path
+  the user runs, not just the underlying library.
+- **The user will verify this one interactively** on their own machine
+  (this development environment has no real display) -- run
+  `scripts/run_c64.py` and confirm the window actually looks right.
 
 ## Phase 9 — Keyboard input (not started)
 

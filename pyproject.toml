@@ -12,6 +12,10 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest"]
+# The emulation core (src/c64/, src/c6502/) has zero runtime dependencies
+# -- this is only needed for src/peripherals/ (real screen/keyboard/audio
+# I/O), starting with screen output in Phase 8. See docs/roadmap.md.
+peripherals = ["pygame"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
