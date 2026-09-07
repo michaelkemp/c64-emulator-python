@@ -2,18 +2,43 @@
 
 See docs/cia.md's "Keyboard matrix and joysticks" section: this models
 the matrix electrically (which raw row/column coordinates are shorted
-together when a key is held), not symbolically -- there's deliberately no
-key-name table here yet, since two community references for the real
-row/column assignment disagree with each other and this project hasn't
-verified either against the real KERNAL ROM's own table yet.
+together when a key is held). `KEY_POSITIONS` -- the symbolic name ->
+(row, col) table -- was verified empirically against this project's own
+staged, real KERNAL (Phase 9), not trusted from either of two disputed
+community references; see docs/cia.md for exactly how and what it caught.
 
 Real hardware wires the matrix symmetrically between CIA1's Port A and
 Port B, so scanning works in either direction (drive rows on A, sense
 columns on B -- the KERNAL's own convention -- or the reverse, which a
 handful of programs use). `sense_columns`/`sense_rows` reflect that.
+
+`RESTORE` isn't here -- real hardware wires it directly to the CPU's NMI
+line, not through CIA1 like every other key. See docs/cia.md.
 """
 
 from __future__ import annotations
+
+# Verified against the real KERNAL's own GETIN routine, one position at a
+# time -- see docs/cia.md. Digits/letters use their own character;
+# everything else gets a descriptive name.
+KEY_POSITIONS: dict[str, tuple[int, int]] = {
+    "DEL": (0, 0), "RETURN": (0, 1), "CRSR_RIGHT": (0, 2), "F7": (0, 3),
+    "F1": (0, 4), "F3": (0, 5), "F5": (0, 6), "CRSR_DOWN": (0, 7),
+    "3": (1, 0), "W": (1, 1), "A": (1, 2), "4": (1, 3),
+    "Z": (1, 4), "S": (1, 5), "E": (1, 6), "LSHIFT": (1, 7),
+    "5": (2, 0), "R": (2, 1), "D": (2, 2), "6": (2, 3),
+    "C": (2, 4), "F": (2, 5), "T": (2, 6), "X": (2, 7),
+    "7": (3, 0), "Y": (3, 1), "G": (3, 2), "8": (3, 3),
+    "B": (3, 4), "H": (3, 5), "U": (3, 6), "V": (3, 7),
+    "9": (4, 0), "I": (4, 1), "J": (4, 2), "0": (4, 3),
+    "M": (4, 4), "K": (4, 5), "O": (4, 6), "N": (4, 7),
+    "PLUS": (5, 0), "P": (5, 1), "L": (5, 2), "MINUS": (5, 3),
+    "PERIOD": (5, 4), "COLON": (5, 5), "AT": (5, 6), "COMMA": (5, 7),
+    "POUND": (6, 0), "ASTERISK": (6, 1), "SEMICOLON": (6, 2), "HOME": (6, 3),
+    "RSHIFT": (6, 4), "EQUALS": (6, 5), "UP_ARROW": (6, 6), "SLASH": (6, 7),
+    "1": (7, 0), "LEFT_ARROW": (7, 1), "COMMODORE": (7, 2), "2": (7, 3),
+    "SPACE": (7, 4), "CTRL": (7, 5), "Q": (7, 6), "RUN_STOP": (7, 7),
+}
 
 
 class KeyboardMatrix:
@@ -31,6 +56,12 @@ class KeyboardMatrix:
 
     def release_all(self) -> None:
         self._pressed.clear()
+
+    def press_key(self, name: str) -> None:
+        self.press(*KEY_POSITIONS[name])
+
+    def release_key(self, name: str) -> None:
+        self.release(*KEY_POSITIONS[name])
 
     def sense_columns(self, rows_driven_low: int) -> int:
         """Column bits pulled low by a pressed key on any of the given

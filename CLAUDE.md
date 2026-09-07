@@ -164,10 +164,11 @@ src/
                         # extra (pygame); the only part of this repo with
                         # a runtime dependency.
     screen.py              # pygame window showing VicII output (Phase 8)
+    keyboard.py            # real key events -> KeyboardMatrix (Phase 9)
 tests/
   emulator/             # CPU core tests (ported)
   asm/                  # assembler tests (ported, one adapted)
-  peripherals/          # Screen tests -- gated behind pytest.importorskip
+  peripherals/          # Screen + Keyboard tests -- gated behind pytest.importorskip
   c64/                  # Bus + CpuPort + CIA + keyboard/joystick + VIC-II + SID + Machine tests
 ```
 
@@ -228,12 +229,25 @@ Summary:
       window, paced to ~50Hz; verified by running the real KERNAL+BASIC
       through the actual `Screen.draw()` pipeline and confirming the
       real boot screen renders correctly — see `docs/roadmap.md`'s
-      Phase 8. **Not yet confirmed on a real display** — this dev
-      environment has none; the user will verify `scripts/run_c64.py`
-      looks right on their own machine.
-- Next up: keyboard (Phase 9, depends on Phase 8's window for event
-  capture), then audio (Phase 10, needs real wall-clock pacing), then
-  storage (Phase 11)
+      Phase 8. **Confirmed working on the user's real display** — ran
+      `scripts/run_c64.py` and reported it worked (visually slow, since
+      no speed-optimization pass has been done — see `docs/machine.md`'s
+      profiling numbers and the `enable_audio` fix that already
+      addressed the biggest identified waste).
+- [x] **Phase 9** — keyboard input (`src/peripherals/keyboard.py`) — real
+      pygame key events mapped to `KeyboardMatrix`. The keyboard-matrix-
+      layout ambiguity `docs/cia.md` flagged as an open gap is now
+      **resolved empirically**: pressed each of the 64 positions alone
+      against the real staged KERNAL and read back the actual character
+      via its own `GETIN` routine, rather than trusting either disputed
+      community source (and caught a real error in one of them along the
+      way) — see `KeyboardMatrix.KEY_POSITIONS` in `src/c64/
+      keyboard_matrix.py` and `docs/cia.md`. Verified end-to-end: typing
+      `HELLO`+`RETURN` via simulated key events through the real
+      KERNAL+BASIC produces the exact real response
+      (`?SYNTAX  ERROR`) — see `docs/roadmap.md`'s Phase 9.
+- Next up: audio (Phase 10, needs real wall-clock pacing), then storage
+  (Phase 11)
 
 ## Reference documentation
 

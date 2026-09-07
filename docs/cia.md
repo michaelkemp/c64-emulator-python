@@ -170,16 +170,27 @@ direction, matching real hardware's symmetric wiring. `Joystick`
 switches, active low, on whichever port it's plugged into. `Cia1Ports`
 composes both into the single `port_coupler` `CIA6526` expects.
 
-**Known gap, deliberately left open**: there's no symbolic key-name table
-(e.g. `press_key("A")`) yet. Two well-regarded community references
-disagree with each other on the exact row/column assignment (compare
-[c64-wiki.com/wiki/Keyboard](https://www.c64-wiki.com/wiki/Keyboard) against
-[sta.c64.org/cbm64kbdlay.html](http://sta.c64.org/cbm64kbdlay.html) -- they
-don't agree, likely from differing row/column or bit-order conventions
-between transcriptions), and this project already has the means to
-resolve it definitively (the real KERNAL ROM's own keyboard decode table,
-now that `roms/c64/` can be staged -- see `docs/roadmap.md` Phase 1)
-rather than trusting either secondary source. Left for whoever wires up
-real keyboard input; the matrix mechanism itself (`press`/`release` by
-raw row/column) is correct and tested independent of what name belongs at
-which coordinate.
+**Resolved (Phase 9), empirically, not from either disputed source**: two
+well-regarded community references disagreed with each other on the exact
+row/column assignment ([c64-wiki.com/wiki/Keyboard](https://www.c64-wiki.com/wiki/Keyboard)
+vs. [sta.c64.org/cbm64kbdlay.html](http://sta.c64.org/cbm64kbdlay.html)).
+Rather than trust either, this project's own staged, real KERNAL settled
+it directly: for each of the 64 `(row, col)` positions, `KeyboardMatrix.press`
+that position alone, run `Machine` far enough for the real IRQ-driven
+keyboard scan to see it, and call the KERNAL's own official `GETIN`
+routine (`$FFE4`) to read back the actual PETSCII character the real ROM
+decodes it to. The result is internally consistent (digits/letters land
+in the expected QWERTY-shaped rows; exactly 4 positions never produce a
+character -- the two shifts, Commodore, and CTRL, exactly the 4 real
+modifier keys) and matches `sta.c64.org`'s table almost exactly, catching
+one real error in it along the way (`(0, 2)` is `CRSR RIGHT`, PETSCII
+`$1D`, not `←` as that table claims). `KeyboardMatrix.KEY_POSITIONS` (a
+`dict[str, tuple[int, int]]`) and `press_key`/`release_key` are built on
+this verified table -- see `keyboard_matrix.py`.
+
+`RESTORE` isn't part of the matrix at all on real hardware -- it wires
+directly to the CPU's NMI line (diode-OR'd with CIA2's own NMI output),
+not through CIA1 like every other key. Not modeled as a `KeyboardMatrix`
+position; a future peripherals bridge should call `machine.cpu.nmi()`
+directly for it, the same edge-triggered way `Machine.step()` already
+handles CIA2.

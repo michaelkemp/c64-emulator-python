@@ -342,15 +342,47 @@ together from real elapsed cycles, with real interrupt delivery.
   (this development environment has no real display) -- run
   `scripts/run_c64.py` and confirm the window actually looks right.
 
-## Phase 9 — Keyboard input (not started)
+## Phase 9 — Keyboard input (done)
 
-- [ ] `peripherals/keyboard.py`: real key events (via pygame, so this
-      depends on Phase 8's window existing to capture them from) mapped
-      to `KeyboardMatrix.press`/`release`.
-- [ ] Finally resolve the keyboard-matrix-layout ambiguity flagged in
-      `docs/cia.md` (two disputed community sources) by tracing the real
-      KERNAL's own decode table, now that ROMs are staged — rather than
-      trusting either secondary source.
+- [x] Resolved the keyboard-matrix-layout ambiguity flagged in
+      `docs/cia.md` **empirically**, not by trusting either disputed
+      community source: for each of the 64 `(row, col)` positions, pressed
+      it alone, ran `Machine` far enough for the real IRQ-driven scan to
+      see it, and called the actual KERNAL's own `GETIN` routine (`$FFE4`)
+      to read back what character the genuine ROM decodes it to. Result
+      is internally consistent (a QWERTY-shaped layout; exactly 4
+      positions produce nothing — the real 4 modifier keys) and caught a
+      real error in the `sta.c64.org` table it otherwise matches almost
+      exactly (`(0,2)` is `CRSR RIGHT`, not `←`). Landed as
+      `KeyboardMatrix.KEY_POSITIONS`/`press_key`/`release_key` in
+      `src/c64/keyboard_matrix.py` (not `peripherals/`, since it's a fact
+      about the matrix itself, not about bridging to real input) — see
+      `docs/cia.md`.
+- [x] `src/peripherals/keyboard.py` — `Keyboard`: real pygame key events
+      mapped to the matrix. Handles the one real hardware quirk this
+      needs: a modern keyboard's four separate arrow keys map onto the
+      C64's two physical cursor keys (`CRSR_RIGHT`/`CRSR_DOWN`) plus a
+      *synthesized* `LSHIFT` for Left/Up (real hardware reverses cursor
+      direction via Shift) -- reference-counted, not a single flag, so
+      releasing one arrow key can't force-release a real Shift the user
+      is still physically holding, or a shift the *other* arrow key still
+      needs. `RESTORE` (mapped to F12) isn't a matrix key on real
+      hardware (see `docs/cia.md`) -- calls `Machine.cpu.nmi()` directly.
+- [x] `scripts/run_c64.py` now routes pygame keyboard events to `Keyboard`
+      alongside the existing screen loop.
+- [x] `tests/peripherals/test_keyboard.py` — 8 tests. Caught a real
+      design bug before it shipped: the initial single-flag design for
+      the synthesized Shift would force-release a genuinely-held real
+      Shift key when an arrow key was released; fixed with proper
+      reference counting.
+- Verified with a real integration check (run manually this session, not
+  committed as a test): booting the real KERNAL+BASIC, then "typing"
+  `HELLO` + `RETURN` entirely through simulated pygame key events (via
+  `Keyboard`, through the real matrix, real CIA1, real KERNAL scan, real
+  BASIC input handling) produces the exact real C64 response --
+  `HELLO` echoed, `?SYNTAX  ERROR`, a fresh `READY.` -- rendered and
+  confirmed via the actual `Screen` pipeline, the same standard of proof
+  as every prior phase.
 
 ## Phase 10 — Audio output (not started)
 

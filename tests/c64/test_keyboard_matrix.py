@@ -1,5 +1,5 @@
 from c64.joystick import Joystick
-from c64.keyboard_matrix import Cia1Ports, KeyboardMatrix
+from c64.keyboard_matrix import KEY_POSITIONS, Cia1Ports, KeyboardMatrix
 
 
 def test_sense_columns_reports_pressed_keys_on_driven_rows():
@@ -45,3 +45,19 @@ def test_cia1_ports_combines_keyboard_and_joysticks():
     assert ports.sense_b(a_driven_low=0b0000_0001) == (1 << 0) | 0x10
     # port A senses: joystick 2's up bit (no rows driven low here)
     assert ports.sense_a(b_driven_low=0x00) == 0x01
+
+
+def test_key_positions_table_has_64_unique_positions():
+    assert len(KEY_POSITIONS) == 64
+    assert len(set(KEY_POSITIONS.values())) == 64  # no two names share a spot
+    for row, col in KEY_POSITIONS.values():
+        assert 0 <= row <= 7
+        assert 0 <= col <= 7
+
+
+def test_press_key_and_release_key_use_the_verified_table():
+    kb = KeyboardMatrix()
+    kb.press_key("A")
+    assert kb.is_pressed(*KEY_POSITIONS["A"])
+    kb.release_key("A")
+    assert not kb.is_pressed(*KEY_POSITIONS["A"])
