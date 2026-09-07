@@ -52,6 +52,27 @@ and its `step()` method is the real system clock.
   screen output (Phase 8) but audio (Phase 10) will need it, since audio
   pitch is wrong if cycles aren't spent at the real PAL rate.
 
+## Performance: real-time is genuinely not reached yet, and that's expected
+
+Measured on the machine this was developed on, running the real
+KERNAL+BASIC (`scripts/run_c64.py`'s actual workload): one simulated PAL
+frame (`CYCLES_PER_FRAME` = 19,656 PHI2 cycles) took **85.7ms** with
+`enable_audio=True` (~11.7fps achievable) and **29.7ms** with it `False`
+(~33.7fps achievable) -- against a 20ms/50fps real-hardware target.
+
+Profiling (`cProfile`, 10 frames, `enable_audio=True`) showed `Sid.tick`
+alone accounting for over half of total time (1.265s of 2.305s) -- by far
+the most expensive of the four chips being ticked every cycle, and pure
+waste whenever nothing consumes its audio output. `Machine`'s
+`enable_audio` flag (default `False`) skips it entirely until Phase 10
+needs it, which is most of the gap above. What's left (29.7ms, still
+short of 20ms) is genuine CPU+CIA+VIC-II emulation cost, not identified
+waste -- this project has made no deliberate speed-optimization pass
+beyond that one fix, correctness having been the priority through
+Phases 0-8. A real speed effort (profiling the remaining hot paths,
+PyPy, or otherwise) is explicitly **not** part of this phase; revisit if
+and when it's actually needed.
+
 ## Verified
 
 A real integration check (see `docs/roadmap.md`'s Phase 7): booting the

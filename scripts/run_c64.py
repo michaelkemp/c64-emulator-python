@@ -28,7 +28,7 @@ def main() -> None:
     if not (roms_dir / "kernal").exists():
         raise SystemExit(f"No ROMs staged in {roms_dir}. Run scripts/stage_roms.sh first.")
 
-    machine = Machine.from_roms(roms_dir)
+    machine = Machine.from_roms(roms_dir)  # enable_audio defaults off -- no audio consumer yet (Phase 10)
     screen = Screen(scale=2)
 
     carry = 0

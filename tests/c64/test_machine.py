@@ -16,6 +16,27 @@ def test_step_returns_the_real_instruction_cycle_count():
     assert m.step() == 2
 
 
+def test_audio_is_disabled_by_default_and_sid_does_not_tick():
+    m = Machine()
+    assert m.enable_audio is False
+    m.bus.write16(0xFFFC, 0x0810)
+    m.bus.load(0x0810, bytes([0xEA]))  # NOP
+    m.cpu.reset()
+    m.step()
+    assert m.sid.voices[0].accumulator == 0  # never advanced
+
+
+def test_enable_audio_makes_sid_tick():
+    m = Machine(enable_audio=True)
+    m.bus.write16(0xFFFC, 0x0810)
+    m.bus.load(0x0810, bytes([0xEA]))  # NOP = 2 cycles
+    m.cpu.reset()
+    m.sid.voices[0].freq = 0x1000
+    m.sid.voices[0].control = 0x20  # sawtooth, so the accumulator matters
+    m.step()
+    assert m.sid.voices[0].accumulator == 0x1000 * 2  # advanced by exactly 2 cycles
+
+
 def test_step_advances_every_chip_by_the_same_cycles():
     m = Machine()
     m.bus.write16(0xFFFC, 0x0810)
