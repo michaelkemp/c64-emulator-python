@@ -130,13 +130,16 @@ docs/
   testing-strategy.md   # how correctness gets validated, incl. license discipline
   cia.md                # CIA register map + behavior (Phase 3)
   vic-ii.md             # VIC-II register map, text mode, sprites (Phase 4/5)
-  sid.md                # written when SID is implemented (Phase 6) -- see
-                        # "Documentation convention" above. Doesn't exist yet.
+  sid.md                # SID register map + behavior (Phase 6)
 scripts/
   fetch_dormann_tests.sh # fetches the GPLv3 Klaus Dormann suite, not vendored
   stage_roms.sh          # stages the user's own local C64 ROMs into
                           # gitignored roms/c64/ -- never downloads ROMs
                           # itself, see Phase 1 below
+  render_frame.py        # boots the staged ROMs and writes a PNG of the
+                          # VIC-II's screen output (Phase 4)
+  render_audio.py        # plays a test tone through the real SID stack
+                          # and writes a WAV file (Phase 6)
 src/
   c6502/                # ported CPU core + assembler -- see "What came over" above
     emulator/
@@ -149,10 +152,12 @@ src/
     joystick.py             # digital joystick (Phase 3)
     vic_ii.py               # MOS 6567/6569 VIC-II: registers + text-mode
                              # rendering + sprites/collisions (Phase 4/5)
+    sid.py                  # MOS 6581/8580 SID: oscillators, ADSR,
+                             # filter (Phase 6)
 tests/
   emulator/             # CPU core tests (ported)
   asm/                  # assembler tests (ported, one adapted)
-  c64/                  # Bus + CpuPort + CIA + keyboard/joystick + VIC-II tests
+  c64/                  # Bus + CpuPort + CIA + keyboard/joystick + VIC-II + SID tests
 ```
 
 ## Status / roadmap
@@ -191,7 +196,15 @@ Summary:
       machine that doesn't exist yet — badlines are modeled only as a
       queryable condition); see `docs/roadmap.md`'s Phase 5 and
       `docs/vic-ii.md`
-- [ ] **Phase 6** — SID
+- [x] **Phase 6** — SID (`src/c64/sid.py`) — three oscillators, ADSR
+      envelopes, hard sync, ring modulation, a simple digital filter
+      (explicitly not reSID's transistor-level model); verified with a
+      real assembled 6502 program (`scripts/render_audio.py`) whose
+      generated audio measured **exactly 440.0Hz** by zero-crossing count
+      for a 440Hz note poke — see `docs/roadmap.md`'s Phase 6 and
+      `docs/sid.md`. All six original roadmap phases are now done; what's
+      left is cycle-accurate timing and real I/O (screen/keyboard/audio/
+      disk), neither of which has a phase number yet
 
 ## Reference documentation
 

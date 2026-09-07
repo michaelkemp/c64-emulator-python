@@ -215,17 +215,49 @@ makes raster timing itself cycle-accurate, it doesn't make VIC-II able to
 actually take cycles away from the CPU, which still needs the same
 not-yet-built running-machine milestone.
 
-## Phase 6 — SID (not started)
+## Phase 6 — SID (done)
 
-- [ ] Waveform generators, ADSR envelopes, ring modulation, sync. The
-      hardest part is the analog filter (even real 6581 chips vary
-      unit-to-unit) — start with a reasonable digital approximation and
-      refine later; this is the most forgiving chip to get "close enough"
-      early, unlike VIC-II timing.
-- [ ] **`docs/sid.md`** — register map + behavior, including which parts
-      are an approximation vs. bit-accurate, per `CLAUDE.md`'s
-      documentation convention.
+- [x] `src/c64/sid.py` — `Sid`/`Voice`: three independent 24-bit-
+      phase-accumulator oscillators (sawtooth/triangle/pulse/noise, with
+      the standard AND-combination approximation for multiple waveform
+      bits at once), hard sync and ring modulation via real cross-voice
+      coupling (source order 1←3, 2←1, 3←2), a full ADSR state machine
+      driven by the real MOS 6581 datasheet's rate tables (fetched and
+      verified against a transcription of the actual datasheet, not
+      recalled unchecked) with the commonly-published exponential
+      decay/release zone approximation, `OSC3`/`ENV3` readback, voice 3
+      disconnect, and a simple digital state-variable filter (explicitly
+      *not* reSID's transistor-level model — see `docs/sid.md`).
+      `Sid.tick(cycles)` matches `CIA6526.tick`/`VicII.tick`'s shape, per
+      the addendum above.
+- [x] **`docs/sid.md`** — register map + behavior, written before the
+      code, with explicit callouts of every approximation vs. verified
+      fact, per `CLAUDE.md`'s documentation convention.
+- [x] `tests/c64/test_sid.py` — 22 tests covering register decode,
+      each waveform, combined waveforms, hard sync, ring modulation,
+      noise determinism, the full ADSR state machine (including the
+      "re-gate while attacking doesn't reset to 0" real-hardware
+      behavior), voice 3 disconnect, and filter parameter decode. Caught
+      and fixed two real bugs while writing them: a fragile test margin
+      that could bleed an attack-phase check into decay (fixed with an
+      exact cycle count instead of an approximate one), and — more
+      importantly — a genuine bug in `output_sample()` that centered the
+      envelope-scaled level around the DC midpoint instead of centering
+      the raw waveform first and scaling the result by envelope, which
+      made every silent, untriggered voice contribute a spurious `-1.0`
+      instead of true silence.
+- Verified with a real integration check (run manually this session, not
+  committed as a test, now reproducible via `scripts/render_audio.py`):
+  a tiny genuine 6502 program, assembled with this project's own ported
+  assembler and run on the ported CPU core, pokes a real SID voice's
+  frequency register for 440Hz, triangle waveform, and gate directly.
+  Driving `Sid.tick()`/`output_sample()` with the correct PAL-clock-to-
+  44100Hz sample ratio and counting zero-crossings in the generated
+  audio measured **exactly 440.0Hz** — from genuine register pokes by
+  real 6502 code, none of it hand-tuned to match.
 - Reference: [reSID](https://github.com/daglem/reSID) — the standard
   reference implementation (GPL-licensed — study the analog-filter
   modeling approach, don't copy code; same discipline as this project's
-  ported Klaus Dormann precedent).
+  ported Klaus Dormann precedent). Not used as a source of any code or
+  exact constants here -- see `docs/sid.md` for what was actually
+  verified against the primary MOS 6581 datasheet instead.
