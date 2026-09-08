@@ -748,17 +748,110 @@ emulated KERNAL never actually sees.
       path, unlike `test_auto_type.py`'s `KeyboardMatrix`-in-isolation
       tests, which structurally cannot observe this class of bug.
 
-## Phase 11 — Storage: disk + cartridge (not started)
+## Phase 11 — Storage: disk + cartridge (cartridge done -- generic type only; disk not started)
 
-- [ ] Decide fidelity level explicitly before starting: a real 1541
-      emulation is itself another whole 6502+ROM+RAM machine talking a
-      serial protocol (would reuse `c6502` a second time) — much bigger
-      than a "fake fast-load" that intercepts KERNAL's LOAD routine and
-      feeds bytes straight from a `.d64` file, which is what most
-      simplified emulators actually do. Possibly split into both, in that
-      order.
-- [ ] Cartridge (`.crt`) support extends `Bus`'s existing bank-switching
-      to handle the GAME/EXROM "ultimax" mode Phase 2 explicitly deferred.
+- [x] **Cartridge (`.crt`) support, generic/type-0 hardware only.**
+      Raised directly by the user wanting a `cartridge-slot/` directory
+      to drop a real `.crt` file into and have it just work. Scoped
+      explicitly before writing any code (matching this phase's own
+      "decide fidelity level first" instinct below, applied to
+      cartridges specifically): real `.crt` files can name 100+ distinct
+      hardware types, most needing their own bespoke bank-switching
+      register emulation (Action Replay, Ocean type, Fun Play, System 3,
+      various freezer carts...) -- out of scope. Only hardware type 0
+      (plain static ROM, no bank-switching registers at all) is
+      supported; anything else raises `UnsupportedCartridge` with a
+      specific reason, never a silent guess.
+    - `src/c64/cartridge.py` -- `Cartridge.from_file` parses the real
+      `.crt` container format (a structured header + CHIP packets, not
+      a raw binary dump). Verified against the standard format
+      reference *and* against a real, working 16K cartridge (a Galaxian
+      conversion) parsed by hand before writing any code.
+    - `src/c64/bus.py` extended with the real EXROM/GAME lines joining
+      the *same* PLA logic that already gates BASIC/KERNAL ROM on
+      LORAM/HIRAM -- not an independent override. The exact truth table
+      was verified against VICE's own `c64meminit.c` source directly,
+      not a summarized secondary source: a first web-search summary of
+      a wiki table gave an internally self-contradictory answer for the
+      one question that mattered (does ROML need LORAM, or does
+      cartridge presence override the CPU port bits?) -- real emulator
+      source settled it. The real, verified asymmetry: ROML needs EXROM
+      active *and* LORAM *and* HIRAM; ROMH (16K mode only) needs only
+      HIRAM, independent of LORAM. Confirmed with a real, unambiguous
+      test (a distinctive non-zero RAM value written underneath, then
+      toggling LORAM/HIRAM via real `$01` pokes through the DDR, not by
+      poking the property directly) -- not just "it returned a
+      plausible-looking number."
+    - **Zero cartridge-specific code needed for autostart.** The real
+      KERNAL's own boot routine checks for the "CBM80" signature and
+      jumps to the cartridge's own reset vector -- since this project
+      boots the genuine, unmodified KERNAL ROM, this happens
+      automatically once ROML is mapped correctly. Verified directly:
+      booting with the real Galaxian cartridge loaded, the genuine
+      KERNAL jumped into the cartridge's own entry point ($8012,
+      matching its own cold-reset vector exactly) within 33 CPU steps
+      of reset.
+    - `scripts/run_c64.py --cartridge path.crt`, or auto-scans
+      `cartridge-slot/` (gitignored, same convention as `roms/`) for the
+      first file found, deterministically (sorted). Unsupported
+      cartridges print a clear reason and the emulator continues
+      without one, rather than crashing.
+    - `docs/cartridge.md` -- the full format tables, the verified
+      memory-map interaction, and known gaps, written before/alongside
+      the code per this project's per-chip documentation convention.
+    - `tests/c64/test_cartridge.py` (11 tests, synthetic `.crt` bytes
+      built in-test -- no vendored cartridge images, matching this
+      project's ROM-licensing discipline) and 6 new tests in
+      `tests/c64/test_bus.py` covering the LORAM/HIRAM asymmetry and
+      write-through-to-RAM behavior specifically.
+    - **Real cartridges immediately exposed two genuine VIC-II gaps,
+      both fixed, plus one substantial one deliberately not fixed yet.**
+      The real Galaxian cartridge autostarted correctly but rendered a
+      black screen: `$D011`/`$D016` showed BMM=1/MCM=1 (multicolor
+      bitmap mode), stored but entirely inert until now. Added bitmap
+      mode (both hi-res and multicolor sub-modes) to `VicII`/
+      `render_frame` -- see docs/vic-ii.md for the full, verified
+      register/memory-layout details. Verified against the real
+      cartridge, not just synthetic tests: `scripts/render_frame.py
+      --cartridge` now produces the exact, legible real Galaxian title
+      screen ("ATARISOFT PRESENTS... GALAXIAN...", correct colors).
+      A second real cartridge (Frogger) then exposed a *different* gap
+      the same way: its gameplay screen also rendered black, this time
+      because it uses **multicolor text mode** (MCM=1, BMM=0), also
+      entirely unimplemented -- added, including the real, per-cell
+      hardware behavior (each cell's own color RAM bit 3 decides
+      hi-res-vs-multicolor for that cell, not a single global switch).
+      Verified the same way: Frogger's real gameplay screen (traffic,
+      river, "FAST"/"R=04" HUD) rendered fully legible. Along the way,
+      `scripts/render_frame.py` itself turned out to have a real bug --
+      it drove a raw `CPU`+`Bus` with no interrupt delivery at all,
+      silently leaving Frogger's actual (IRQ-driven) screen-drawing code
+      never running; fixed by having it use `Machine` instead.
+      **A third, deeper limitation surfaced from the same Frogger
+      cartridge, deliberately left unfixed**: it changes `$D018`
+      (character set select) to two different values at two different
+      raster lines within a single frame (confirmed directly, not
+      guessed -- `0x14`/`0x12` at raster 252, `0x14` at raster 161), a
+      real, deliberate raster-split technique giving its river and road
+      sections different graphics. `render_frame()`'s one-shot,
+      whole-frame-snapshot design can't represent that -- whichever
+      register value happens to be current at the moment it's called,
+      one half of the screen renders wrong. This is the same
+      already-documented "not cycle-accurate, nothing interleaves CPU
+      and VIC-II per-scanline" gap, now confirmed against real software
+      rather than theoretical -- fixing it means `render_frame()`
+      becoming a genuinely incremental, per-scanline renderer, a
+      substantial architecture change explicitly deferred, not
+      attempted this session. (Checked the cartridge file's own MD5
+      hash first, to rule out a corrupted dump before concluding this
+      was a rendering gap rather than a bad file.)
+- [ ] Decide fidelity level explicitly before starting disk: a real
+      1541 emulation is itself another whole 6502+ROM+RAM machine
+      talking a serial protocol (would reuse `c6502` a second time) —
+      much bigger than a "fake fast-load" that intercepts KERNAL's LOAD
+      routine and feeds bytes straight from a `.d64` file, which is what
+      most simplified emulators actually do. Possibly split into both,
+      in that order.
 - [ ] Blank/writable disk image creation, so software running in the
       emulator can actually save data back out to a real file (raised
       alongside the original `peripherals/` idea).

@@ -133,6 +133,8 @@ docs/
   sid.md                # SID register map + behavior (Phase 6)
   machine.md             # how Machine.step() wires everything together,
                         # incl. IRQ/NMI delivery (Phase 7)
+  cartridge.md           # .crt format, verified memory-map interaction,
+                        # known gaps (Phase 11, generic/type-0 only)
 scripts/
   fetch_dormann_tests.sh # fetches the GPLv3 Klaus Dormann suite, not vendored
   stage_roms.sh          # stages the user's own local C64 ROMs into
@@ -143,7 +145,9 @@ scripts/
   render_audio.py        # plays a test tone through the real SID stack
                           # and writes a WAV file (Phase 6)
   run_c64.py             # boots the staged ROMs; screen+keyboard+audio,
-                          # --type-file / Ctrl+V program input (Phase 8-10)
+                          # --type-file / Ctrl+V program input (Phase 8-10),
+                          # --cartridge / auto-scans cartridge-slot/ (Phase 11)
+cartridge-slot/        # drop a .crt here (gitignored) -- see docs/cartridge.md
 examples/
   sound_test.bas          # plays a scale on SID voice 1
   sprite_test.bas         # a bouncing sprite -- see run_c64.py --type-file
@@ -152,8 +156,10 @@ src/
     emulator/
     asm/
   c64/                  # <-- the actual point of this repo. Zero runtime deps.
-    bus.py                # the real C64 memory map + bank-switching (Phase 2)
+    bus.py                # the real C64 memory map + bank-switching (Phase 2),
+                           # extended for cartridge ROML/ROMH (Phase 11)
     cpu_port.py            # the 6510's $00/$01 I/O port (Phase 2)
+    cartridge.py            # .crt loading, generic/type-0 hardware only (Phase 11)
     cia.py                 # MOS 6526 CIA: ports, timers, TOD, ICR (Phase 3)
     keyboard_matrix.py      # 8x8 key matrix + CIA1 port coupling (Phase 3)
     joystick.py             # digital joystick (Phase 3)
@@ -174,7 +180,7 @@ tests/
   emulator/             # CPU core tests (ported)
   asm/                  # assembler tests (ported, one adapted)
   peripherals/          # Screen + Keyboard + Audio + AutoTyper tests -- gated behind pytest.importorskip
-  c64/                  # Bus + CpuPort + CIA + keyboard/joystick + VIC-II + SID + Machine tests
+  c64/                  # Bus + CpuPort + CIA + keyboard/joystick + VIC-II + SID + Machine + Cartridge tests
 ```
 
 ## Status / roadmap
@@ -432,7 +438,61 @@ Summary:
       on occasion, but I think we are good" — the residual is understood
       (PyPy JIT warm-up on the very first note) and small, nothing like
       the severe, recurring artifact this investigation started with.
-- Next up: storage (Phase 11)
+- [x] **Phase 11 (partial) — cartridge (`.crt`) support, generic/type-0
+      hardware only.** Scoped explicitly before writing code: real `.crt`
+      files can name 100+ hardware types, most needing their own
+      bank-switching register emulation — out of scope; only plain
+      static ROM (type 0, no registers) is supported, everything else
+      raises `UnsupportedCartridge` with a specific reason.
+      `src/c64/cartridge.py` parses the real container format (header +
+      CHIP packets), verified against the standard reference *and* a
+      real, working 16K cartridge (Galaxian) parsed by hand first.
+      `src/c64/bus.py` extended so EXROM/GAME join the *same* PLA logic
+      already gating BASIC/KERNAL ROM on LORAM/HIRAM — the exact truth
+      table came from VICE's own `c64meminit.c` source directly, not a
+      summarized wiki table (which gave a self-contradictory answer for
+      the one question that mattered: ROML needs LORAM *and* HIRAM;
+      ROMH, 16K mode only, needs just HIRAM — a real, verified
+      asymmetry, not assumed). **Zero cartridge-specific code needed for
+      autostart**: the genuine, unmodified KERNAL's own CBM80-signature
+      check does it, confirmed by booting with the real cartridge and
+      watching the CPU jump into it within 33 steps of reset.
+      `scripts/run_c64.py` auto-scans `cartridge-slot/` (gitignored, like
+      `roms/`) for the first file found, or `--cartridge path.crt` for a
+      specific one. `docs/cartridge.md` has the full format/verified
+      truth table/known gaps; 17 new tests (`tests/c64/test_cartridge.py`,
+      synthetic `.crt` bytes, no vendored images; 6 more in
+      `test_bus.py`). Disk (the rest of Phase 11) not started.
+- [x] **Real cartridges immediately exposed two real VIC-II gaps (both
+      fixed) and one deeper one (deliberately not fixed).** Galaxian
+      autostarted but showed a black screen — `$D011`/`$D016` confirmed
+      multicolor bitmap mode (BMM=1/MCM=1), previously stored but
+      entirely inert. Added both bitmap sub-modes to `VicII`; verified
+      against the real cartridge, not just synthetic tests —
+      `scripts/render_frame.py --cartridge` now shows the exact, legible
+      real title screen. Frogger then exposed **multicolor text mode**
+      (MCM=1, BMM=0) the same way — also unimplemented, including the
+      real per-cell behavior (each cell's own color RAM bit 3 picks
+      hi-res-vs-multicolor for *that* cell, not a global switch);
+      verified against Frogger's real, fully legible gameplay screen.
+      Also found and fixed: `render_frame.py` itself drove a raw
+      `CPU`+`Bus` with zero interrupt delivery, silently skipping
+      Frogger's IRQ-driven screen code — switched to using `Machine`.
+      **Deliberately left unfixed**: Frogger also changes `$D018`
+      (character set) at two different raster lines within one frame — a
+      real, deliberate technique giving its river/road sections
+      different graphics that `render_frame()`'s one-shot whole-frame
+      snapshot can't represent (the same "not cycle-accurate" gap this
+      project already names, now confirmed against real software, not
+      just theoretical). Fixing that means a genuinely incremental,
+      per-scanline renderer — a substantial architecture change, not a
+      register-mode addition, explicitly deferred. Checked the
+      cartridge's own MD5 first to rule out a bad dump before concluding
+      it was a rendering gap. Sound confirmed working with zero extra
+      code too — `AudioOutput`/`Sid` don't care who writes SID registers;
+      Galaxian's own writes (master volume, voice setup) were captured
+      directly, confirming the existing pipeline just works.
+- Next up: disk (rest of Phase 11), or real per-scanline VIC-II rendering
 
 ## Reference documentation
 

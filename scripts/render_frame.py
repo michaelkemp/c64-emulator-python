@@ -2,8 +2,20 @@
 """Boot the staged ROMs and render a PNG of the VIC-II's screen output.
 
 Reproduces the manual check used to validate Phase 4 (see docs/vic-ii.md,
-docs/roadmap.md): run the real KERNAL+BASIC unmodified through the full
-CPU+Bus+CIA+VIC-II stack for a while, then render whatever's on screen.
+docs/roadmap.md): run the real KERNAL+BASIC unmodified through the real
+`Machine` (CPU+Bus+both CIAs+VIC-II+SID, with real interrupt delivery)
+for a while, then render whatever's on screen.
+
+**Uses `Machine`, not a hand-built CPU+Bus, deliberately**: an earlier
+version of this script drove a raw `CPU`/`Bus` directly, with no CIA/
+VIC-II ticking and no interrupt delivery at all. That's harmless for the
+static KERNAL/BASIC boot message this script was first written to check
+(printed by straight-line code before any interrupt-driven loop starts),
+but produced a real, misleading black screen for a real cartridge
+(Frogger) whose own screen-drawing code runs inside a raster IRQ handler
+that never fired without real interrupts -- caught only by comparing
+against a direct `Machine`-driven check that showed correct pixels for
+the exact same address the "boot_and_render" render showed as black.
 
 No image library dependency (this project has none at runtime -- see
 CLAUDE.md): PNG encoding here is a couple dozen lines against the
@@ -13,6 +25,7 @@ Usage:
     scripts/stage_roms.sh              # once, if you haven't already
     scripts/render_frame.py            # writes c64_boot.png
     scripts/render_frame.py --instructions 500000 --scale 3 --out boot.png
+    scripts/render_frame.py --cartridge cartridge-slot/some_game.crt
 """
 
 from __future__ import annotations
@@ -26,39 +39,21 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from c64.bus import Bus  # noqa: E402
-from c64.cia import CIA6526  # noqa: E402
-from c64.keyboard_matrix import Cia1Ports, KeyboardMatrix  # noqa: E402
-from c64.vic_ii import PALETTE, VicII  # noqa: E402
-from c6502.emulator.cpu import CPU  # noqa: E402
+from c64.cartridge import Cartridge  # noqa: E402
+from c64.machine import Machine  # noqa: E402
+from c64.vic_ii import PALETTE  # noqa: E402
 
 
-def load_roms(roms_dir: Path) -> tuple[bytes, bytes, bytes]:
-    missing = [name for name in ("kernal", "basic", "chargen") if not (roms_dir / name).exists()]
-    if missing:
-        raise SystemExit(
-            f"Missing ROM(s) in {roms_dir}: {', '.join(missing)}. "
-            "Run scripts/stage_roms.sh first."
-        )
-    return tuple((roms_dir / name).read_bytes() for name in ("kernal", "basic", "chargen"))
+def boot_and_render(roms_dir: Path, instructions: int, cartridge_path: Path | None = None) -> list[list[int]]:
+    if not (roms_dir / "kernal").exists():
+        raise SystemExit(f"No ROMs staged in {roms_dir}. Run scripts/stage_roms.sh first.")
+    cartridge = Cartridge.from_file(cartridge_path) if cartridge_path is not None else None
 
-
-def boot_and_render(roms_dir: Path, instructions: int) -> list[list[int]]:
-    kernal, basic, chargen = load_roms(roms_dir)
-
-    keyboard = KeyboardMatrix()
-    cia1 = CIA6526(port_coupler=Cia1Ports(keyboard))
-    cia2 = CIA6526()
-    vic = VicII()
-
-    bus = Bus(basic_rom=basic, kernal_rom=kernal, char_rom=chargen, cia1=cia1, cia2=cia2, vic=vic)
-    cpu = CPU(bus)
-    cpu.reset()
-
+    machine = Machine.from_roms(roms_dir, cartridge=cartridge)
     for _ in range(instructions):
-        cpu.step()
+        machine.step()
 
-    return vic.render_frame(bus)
+    return machine.vic.render_frame(machine.bus)
 
 
 def scale_frame(frame: list[list[int]], factor: int) -> list[list[int]]:
@@ -102,9 +97,10 @@ def main() -> None:
     parser.add_argument("--instructions", type=int, default=3_000_000)
     parser.add_argument("--scale", type=int, default=2, help="nearest-neighbor pixel scale")
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "c64_boot.png")
+    parser.add_argument("--cartridge", type=Path, help="load this .crt file (generic/type-0 only)")
     args = parser.parse_args()
 
-    frame = boot_and_render(args.roms, args.instructions)
+    frame = boot_and_render(args.roms, args.instructions, cartridge_path=args.cartridge)
     frame = scale_frame(frame, args.scale)
     write_png(args.out, frame, PALETTE)
     print(f"Wrote {args.out} ({len(frame[0])}x{len(frame)})")

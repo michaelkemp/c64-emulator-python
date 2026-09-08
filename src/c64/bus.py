@@ -14,8 +14,7 @@ writes, while I/O is selected.
 
 Bank-switching table (LORAM/HIRAM/CHAREN from `CpuPort`), from the C64
 Programmer's Reference Guide's memory map appendix -- this is the
-non-cartridge case; no cartridge (GAME/EXROM) support exists here, so the
-"ultimax" mode a cartridge can force isn't modeled:
+non-cartridge case:
 
     LORAM HIRAM CHAREN | $A000-$BFFF | $D000-$DFFF | $E000-$FFFF
       1     1     1    | BASIC ROM   | I/O         | KERNAL ROM   (default)
@@ -30,6 +29,27 @@ non-cartridge case; no cartridge (GAME/EXROM) support exists here, so the
 Which reduces to: BASIC ROM needs LORAM *and* HIRAM; KERNAL ROM needs only
 HIRAM; $D000-$DFFF depends only on CHAREN (I/O when set, character ROM
 when clear) -- never plain RAM, regardless of LORAM/HIRAM.
+
+**Cartridges** (`c64.cartridge.Cartridge`, generic/type-0 only -- see
+docs/cartridge.md) add EXROM/GAME to the same PLA, at $8000-$9FFF
+(ROML) and $A000-$BFFF (ROMH, 16K mode only). Verified against VICE's
+own `c64meminit.c` source directly (not a summarized secondary source --
+a first web summary of a wiki table gave an internally-contradictory
+answer for this exact question, only real emulator source settled it):
+
+    GAME EXROM LORAM HIRAM | $8000-$9FFF | $A000-$BFFF
+      1    0     1     1   | ROML        | BASIC ROM     (8K cart)
+      0    0     1     1   | ROML        | ROMH          (16K cart)
+      0    0     0     1   | RAM         | ROMH          (16K cart)
+      *    *     0     *   | RAM         | RAM/BASIC per table above (ROML needs LORAM *and* HIRAM)
+
+Which reduces to: ROML needs EXROM inactive (0) *and* LORAM *and* HIRAM
+(unlike ROMH, LORAM matters here -- confirmed directly from VICE's
+`c64meminit_roml_config`, not assumed); ROMH (16K mode only, GAME and
+EXROM both 0) needs only HIRAM, independent of LORAM. Ultimax mode
+(GAME=0, EXROM=1 -- ROMH forced into $E000-$FFFF instead, most RAM
+disabled) isn't modeled; `Cartridge.from_file` refuses to load one
+rather than silently getting it wrong.
 
 The VIC-II, SID, and the two CIAs don't exist yet (Phases 3/4/6 in
 docs/roadmap.md) -- their register windows are wired up as optional
@@ -55,6 +75,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from c64.cartridge import Cartridge
 from c64.cpu_port import CpuPort
 
 RAM_SIZE = 0x10000
@@ -65,6 +86,11 @@ KERNAL_ROM_START = 0xE000
 KERNAL_ROM_SIZE = 0x2000
 CHAR_ROM_START = 0xD000
 CHAR_ROM_SIZE = 0x1000
+
+CART_ROML_START = 0x8000
+CART_ROML_SIZE = 0x2000
+CART_ROMH_START = 0xA000
+CART_ROMH_SIZE = 0x2000
 
 IO_START = 0xD000
 IO_END = 0xDFFF
@@ -92,6 +118,7 @@ class Bus:
         basic_rom: bytes | None = None,
         kernal_rom: bytes | None = None,
         char_rom: bytes | None = None,
+        cartridge: Cartridge | None = None,
         vic: RegisterChip | None = None,
         sid: RegisterChip | None = None,
         cia1: RegisterChip | None = None,
@@ -100,11 +127,21 @@ class Bus:
         _check_rom_size("basic_rom", basic_rom, BASIC_ROM_SIZE)
         _check_rom_size("kernal_rom", kernal_rom, KERNAL_ROM_SIZE)
         _check_rom_size("char_rom", char_rom, CHAR_ROM_SIZE)
+        _check_rom_size("cartridge.rom_lo", cartridge.rom_lo if cartridge else None, CART_ROML_SIZE)
+        _check_rom_size("cartridge.rom_hi", cartridge.rom_hi if cartridge else None, CART_ROMH_SIZE)
 
         self.port = CpuPort()
         self.basic_rom = basic_rom
         self.kernal_rom = kernal_rom
         self.char_rom = char_rom
+        # Raw EXROM/GAME line values (0=asserted/low, 1=inactive/high) --
+        # 1/1 is the real, pulled-up "no cartridge" state, matching the
+        # default when `cartridge` is None. See this module's docstring
+        # for the verified truth table and docs/cartridge.md.
+        self.cart_exrom = cartridge.exrom if cartridge is not None else 1
+        self.cart_game = cartridge.game if cartridge is not None else 1
+        self.cart_rom_lo = cartridge.rom_lo if cartridge is not None else None
+        self.cart_rom_hi = cartridge.rom_hi if cartridge is not None else None
         self.vic = vic
         self.sid = sid
         self.cia1 = cia1
@@ -119,6 +156,22 @@ class Bus:
             return self.port.read_ddr()
         if address == 0x0001:
             return self.port.read_data()
+        if (
+            CART_ROML_START <= address < CART_ROML_START + CART_ROML_SIZE
+            and self.cart_exrom == 0
+            and self.port.loram
+            and self.port.hiram
+            and self.cart_rom_lo is not None
+        ):
+            return self.cart_rom_lo[address - CART_ROML_START]
+        if (
+            CART_ROMH_START <= address < CART_ROMH_START + CART_ROMH_SIZE
+            and self.cart_game == 0
+            and self.cart_exrom == 0
+            and self.port.hiram
+            and self.cart_rom_hi is not None
+        ):
+            return self.cart_rom_hi[address - CART_ROMH_START]
         if (
             BASIC_ROM_START <= address < BASIC_ROM_START + BASIC_ROM_SIZE
             and self.port.loram

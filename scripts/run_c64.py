@@ -35,11 +35,19 @@ minutes. The screen updates periodically (not per keystroke) during a
 long paste so it doesn't look frozen, and the window stays responsive to
 being closed.
 
+Cartridges: drop a .crt file in cartridge-slot/ (gitignored) and it's
+auto-loaded like a real one plugged into the expansion port -- only the
+first file found is used. Generic/type-0 cartridges only (plain,
+static ROM, no bank-switching registers) -- see docs/cartridge.md for
+what that covers and doesn't. Pass --cartridge to load a specific file
+instead of scanning the directory.
+
 Usage:
     scripts/stage_roms.sh   # once, if you haven't already
     scripts/run_c64.py
     scripts/run_c64.py --no-audio
     scripts/run_c64.py --type-file examples/sound_test.bas
+    scripts/run_c64.py --cartridge cartridge-slot/some_game.crt
 """
 
 from __future__ import annotations
@@ -54,6 +62,7 @@ import pygame
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from c64.cartridge import Cartridge, UnsupportedCartridge  # noqa: E402
 from c64.machine import Machine  # noqa: E402
 from peripherals.audio import AudioOutput  # noqa: E402
 from peripherals.auto_type import AutoTyper  # noqa: E402
@@ -65,6 +74,20 @@ from peripherals.screen import CYCLES_PER_FRAME, Screen  # noqa: E402
 # docs/roadmap.md's Phase 4/7 notes) -- how long --type-file waits before
 # it starts, so keystrokes don't land during boot and go unseen.
 BOOT_SETTLE_FRAMES = 150
+
+# Drop a .crt file in here to have it behave like a real cartridge
+# plugged into the expansion port -- gitignored, never committed (see
+# docs/cartridge.md). Only the first file found (sorted, so it's
+# deterministic) is loaded; if you want a specific one, pass --cartridge
+# instead and leave this directory alone or empty.
+CARTRIDGE_SLOT_DIR = REPO_ROOT / "cartridge-slot"
+
+
+def _find_cartridge_in_slot() -> Path | None:
+    if not CARTRIDGE_SLOT_DIR.is_dir():
+        return None
+    candidates = sorted(p for p in CARTRIDGE_SLOT_DIR.iterdir() if p.is_file())
+    return candidates[0] if candidates else None
 
 # How often (wall-clock seconds) the fast-forward typing loop checks for
 # window-close events and redraws the screen, so a long paste doesn't
@@ -136,6 +159,12 @@ def main() -> None:
     parser.add_argument("--no-audio", action="store_true", help="skip SID ticking entirely")
     parser.add_argument("--type-file", type=Path, help="type this file's contents in once booted")
     parser.add_argument(
+        "--cartridge",
+        type=Path,
+        help="load this specific .crt file instead of auto-scanning cartridge-slot/ "
+        "(generic/type-0 cartridges only -- see docs/cartridge.md)",
+    )
+    parser.add_argument(
         "--no-video-draw",
         action="store_true",
         help="skip screen.draw() entirely (but keep screen.tick()'s pacing and the "
@@ -153,7 +182,16 @@ def main() -> None:
 
     program_text = args.type_file.read_text() if args.type_file else None
 
-    machine = Machine.from_roms(roms_dir, enable_audio=not args.no_audio)
+    cartridge_path = args.cartridge if args.cartridge is not None else _find_cartridge_in_slot()
+    cartridge = None
+    if cartridge_path is not None:
+        try:
+            cartridge = Cartridge.from_file(cartridge_path)
+            print(f"Cartridge loaded: {cartridge_path.name}" + (f" ({cartridge.name})" if cartridge.name else ""))
+        except UnsupportedCartridge as exc:
+            print(f"Not loading {cartridge_path.name}: {exc}")
+
+    machine = Machine.from_roms(roms_dir, cartridge=cartridge, enable_audio=not args.no_audio)
     screen = Screen(scale=2)
     keyboard = Keyboard(machine.keyboard)
     auto_typer = AutoTyper(machine.keyboard)

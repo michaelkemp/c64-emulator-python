@@ -253,9 +253,94 @@ section for why.
 
 ## Known gaps in this phase
 
-- **No bitmap mode, no extended-color mode.** `BMM`/`ECM` are stored but
-  inert -- no phase currently covers them; add one if real software needs
-  them.
+- **No extended color mode.** `ECM` is stored but inert -- real software
+  needing it hasn't come up yet; add support if it does.
+- **`render_frame()` is a one-shot snapshot, not per-scanline rendering
+  -- real, confirmed limitation, not theoretical.** Found from a second
+  real cartridge (Frogger): it writes `$D018` (character set select) to
+  *two different values at two different raster lines within the same
+  frame* (confirmed directly: writes of `0x14` then `0x12` at raster 252,
+  `0x14` again at raster 161) -- a real, deliberate, well-known C64
+  technique (different character sets for different screen regions,
+  e.g. the river vs. the road here), not corruption (verified the
+  cartridge file's own MD5 first, to rule that out before concluding
+  this was a rendering gap). `render_frame()` takes a single snapshot of
+  current VIC-II register state and draws the *entire* frame with it --
+  there's no way to represent "this half of the screen used $D018=$14,
+  that half used $12" in one snapshot, so whichever value happens to be
+  current when the snapshot is taken, one half of the screen renders
+  with the wrong character set. Galaxian doesn't hit this (one
+  character set/mode for its whole screen), which is why its title
+  screen renders perfectly while Frogger's gameplay screen doesn't. This
+  is the same underlying gap this doc already names elsewhere ("real
+  CPU-cycle stealing still doesn't happen... nothing yet interleaves
+  CPU and VIC-II cycle-by-cycle") -- fixing it for real means
+  `render_frame()` becoming a genuinely incremental, per-scanline
+  renderer driven by real cycle timing, not a one-shot snapshot. A
+  substantial architecture change, not a register-mode addition like
+  bitmap/multicolor mode above -- deliberately not started yet; revisit
+  if/when real per-scanline rendering becomes a priority.
+
+## Bitmap mode and multicolor text mode (added for real cartridge software)
+
+Raised directly by real software needing them: booting a real, generic
+16K cartridge (a Galaxian conversion) produced a title screen that
+never rendered (correctly detected and autostarted -- see
+docs/cartridge.md -- but drawn in a mode this project didn't
+implement). Confirmed via the real VIC-II registers directly, not
+guessed: `$D011` had bit 5 (BMM) set, `$D016` had bit 4 (MCM) set --
+multicolor bitmap mode.
+
+**Bitmap mode (`VicII.bitmap_mode`, $D011 bit 5)**: each text-mode
+cell's 8 bytes of pixel data come from `bitmap_base` (in cell order,
+`cell_index * 8` -- no per-cell lookup the way a character code selects
+glyph data in text mode) instead of a fixed character generator.
+`bitmap_base` reuses $D018, but **only bit 3 matters** (selecting
+between the two 8KB halves of the current 16KB VIC bank) -- bits 2-1,
+which pick a character-generator bank in text mode, are ignored here.
+A real, documented hardware quirk, not a simplification. The video
+matrix (`video_matrix_base`, same base as text mode) still supplies one
+byte per cell, but now holds two direct color values (high/low nibble)
+instead of a screen code.
+
+- **Hi-res bitmap** (MCM=0): 8 real pixels per cell, 1 bit each --
+  1=video matrix high nibble, 0=low nibble. No background register or
+  color RAM involved.
+- **Multicolor bitmap** (MCM=1) -- what the real Galaxian cartridge
+  actually uses: 4 double-wide pixels per cell, 2 bits each: `00`=
+  background ($D021), `01`=video matrix high nibble, `10`=video matrix
+  low nibble, `11`=color RAM (the same color RAM text mode uses).
+
+**Multicolor text mode** ($D016 bit 4, MCM, with BMM=0): found the same
+way, from a second real cartridge (Frogger) whose gameplay screen also
+never rendered. The real, per-cell hardware behavior (not a global
+on/off switch): each cell's *own* color RAM nibble decides whether
+*that specific cell* renders as 4-color multicolor or falls back to
+ordinary hi-res -- both can appear mixed on the same MCM=1 screen. If
+color RAM bit 3 is set: 4 double-wide pixels per cell, `00`=$D021,
+`01`=$D022 (background1), `10`=$D023 (background2), `11`=color RAM's
+low 3 bits. If bit 3 is clear: ordinary hi-res, using the full color RAM
+nibble as the foreground color exactly like non-multicolor text mode.
+
+Both verified against the exact real cartridges that needed them, not
+synthetic test data alone: `scripts/render_frame.py --cartridge
+cartridge-slot/<file>.crt` produces a fully legible, correctly-colored
+render of each game's real title/gameplay screen (Galaxian's actual
+"ATARISOFT PRESENTS... GALAXIAN..." title card; Frogger's actual traffic
+lanes, river section, and "FAST"/"R=nn" HUD text) -- not just "the code
+runs without crashing."
+
+**`scripts/render_frame.py` had a real, separate bug found along the
+way**: it built a raw `CPU`+`Bus` directly, with no CIA/VIC-II ticking
+and no interrupt delivery at all -- harmless for the static KERNAL/BASIC
+boot message it was first written to check (printed by straight-line
+code before any interrupt-driven loop starts), but produced a
+misleading black screen for Frogger, whose own screen-drawing code runs
+inside a raster IRQ handler that this script's naive loop never fired.
+Caught by comparing against a direct `Machine`-driven check that showed
+correct, real pixel colors for the exact same screen address the
+script's render showed as black. Fixed by having the script use
+`Machine` (real interrupt delivery) instead of a hand-built CPU/Bus.
 - **Real CPU-cycle stealing still doesn't happen.** `VicII.tick(cycles)`
   (matching `CIA6526.tick(cycles)`'s shape) advances the raster line
   counter and fires raster IRQs precisely against however many PHI2

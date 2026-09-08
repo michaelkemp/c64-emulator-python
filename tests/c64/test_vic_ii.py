@@ -2,6 +2,8 @@ import pytest
 
 from c64.vic_ii import (
     BACKGROUND_COLOR0,
+    BACKGROUND_COLOR1,
+    BACKGROUND_COLOR2,
     BADLINE_FIRST_LINE,
     BADLINE_LAST_LINE,
     BORDER_COLOR,
@@ -61,6 +63,18 @@ def test_memory_pointers_compute_matrix_and_char_base(vic):
     vic.write_register(MEMORY_POINTERS, 0x12)  # VM=0001, CB=001
     assert vic.video_matrix_base == 0x0400
     assert vic.char_base == 0x0800
+
+
+def test_bitmap_base_only_cares_about_bit_3_not_the_full_char_bank_field(vic):
+    # Real, documented hardware quirk, not a simplification: bitmap mode
+    # reuses $D018, but bits 2-1 (which pick a char-generator bank in
+    # text mode) are ignored -- only bit 3 (which of the two 8KB halves
+    # of the current VIC bank) matters. Verified against VICE's own
+    # source alongside the cartridge memory-map work -- see docs/vic-ii.md.
+    vic.write_register(MEMORY_POINTERS, 0x06)  # bit3=0, bits2-1=11 (would be char_base=$1800)
+    assert vic.bitmap_base == 0x0000
+    vic.write_register(MEMORY_POINTERS, 0x0E)  # bit3=1, bits2-1=11
+    assert vic.bitmap_base == 0x2000
 
 
 def test_control1_rst8_is_separate_on_read_vs_write(vic):
@@ -194,6 +208,89 @@ def test_yscroll_at_the_real_default_does_not_clip_the_bottom_row():
     bottom_pixel_row = BORDER_Y + DISPLAY_HEIGHT - 1
     for x in range(BORDER_X, BORDER_X + 8):
         assert frame[bottom_pixel_row][x] == 5  # must be drawn, not clipped away
+
+
+def test_hires_bitmap_mode_uses_video_matrix_nibbles_not_char_rom(vic):
+    # Regression test: found from a real cartridge (Galaxian) whose
+    # title screen never rendered because bitmap mode was entirely
+    # unimplemented -- see docs/vic-ii.md.
+    bus = FakeBus()
+    vic.write_register(MEMORY_POINTERS, 0x18)  # matrix @ $0400, bitmap_base bit3=1 -> $2000
+    vic.write_register(CONTROL1, 0x20 | 0x10 | 0x08 | 0x03)  # BMM=1, DEN=1, RSEL=1, YSCROLL=3
+    vic.write_register(CONTROL2, 0x08)  # CSEL=1, MCM=0 (hi-res bitmap)
+
+    bus.mem[0x0400] = 0x51  # cell 0's video matrix byte: high nibble=5, low nibble=1
+    bus.mem[0x2000] = 0xF0  # cell 0's first bitmap row: upper 4 bits set
+
+    frame = vic.render_frame(bus)
+
+    for x in range(BORDER_X, BORDER_X + 4):
+        assert frame[BORDER_Y][x] == 5  # bit=1 -> video matrix high nibble
+    for x in range(BORDER_X + 4, BORDER_X + 8):
+        assert frame[BORDER_Y][x] == 1  # bit=0 -> video matrix low nibble
+
+
+def test_multicolor_bitmap_mode_decodes_all_four_codes(vic):
+    bus = FakeBus()
+    vic.write_register(MEMORY_POINTERS, 0x10)  # matrix @ $0400, bitmap_base bit3=0 -> $0000
+    vic.write_register(BACKGROUND_COLOR0, 6)
+    vic.write_register(CONTROL1, 0x20 | 0x10 | 0x08 | 0x03)  # BMM=1
+    vic.write_register(CONTROL2, 0x18)  # CSEL=1, MCM=1 (multicolor bitmap)
+
+    bus.mem[0x0400] = 0x93  # video matrix byte: high nibble=9, low nibble=3
+    bus.color_ram[0] = 7
+    bus.mem[0x0000] = 0b00_01_10_11  # the 4 double-wide codes for cell 0's first row
+
+    frame = vic.render_frame(bus)
+
+    assert frame[BORDER_Y][BORDER_X + 0] == 6  # code 00 -> background
+    assert frame[BORDER_Y][BORDER_X + 1] == 6
+    assert frame[BORDER_Y][BORDER_X + 2] == 9  # code 01 -> video matrix high nibble
+    assert frame[BORDER_Y][BORDER_X + 3] == 9
+    assert frame[BORDER_Y][BORDER_X + 4] == 3  # code 10 -> video matrix low nibble
+    assert frame[BORDER_Y][BORDER_X + 5] == 3
+    assert frame[BORDER_Y][BORDER_X + 6] == 7  # code 11 -> color RAM
+    assert frame[BORDER_Y][BORDER_X + 7] == 7
+
+
+def test_multicolor_text_mode_is_a_real_per_cell_toggle_not_a_global_switch(vic):
+    # Regression test: found from a real cartridge (Frogger) whose
+    # gameplay screen never rendered because multicolor text mode was
+    # entirely ignored -- see docs/vic-ii.md. Real hardware behavior:
+    # each cell's own color RAM bit 3 decides hi-res vs multicolor for
+    # *that* cell; both can appear on the same MCM=1 screen.
+    bus = FakeBus()
+    vic.write_register(MEMORY_POINTERS, 0x12)  # matrix @ $0400, chars @ $0800
+    vic.write_register(BACKGROUND_COLOR0, 6)
+    vic.write_register(BACKGROUND_COLOR1, 1)
+    vic.write_register(BACKGROUND_COLOR2, 2)
+    vic.write_register(CONTROL1, 0x10 | 0x08 | 0x03)  # BMM=0, DEN=1, RSEL=1, YSCROLL=3
+    vic.write_register(CONTROL2, 0x08 | 0x10)  # CSEL=1, MCM=1
+
+    # Cell 0 (col 0): color RAM bit 3 SET -> multicolor.
+    bus.mem[0x0400 + 0] = 65
+    bus.mem[0x0800 + 65 * 8 + 0] = 0b00_01_10_11
+    bus.color_ram[0] = 0x0F  # bit3 set, low 3 bits = 7
+
+    # Cell 1 (col 1): color RAM bit 3 CLEAR -> falls back to plain hi-res.
+    bus.mem[0x0400 + 1] = 66
+    bus.mem[0x0800 + 66 * 8 + 0] = 0b11110000
+    bus.color_ram[1] = 0x05  # bit3 clear -> foreground color 5
+
+    frame = vic.render_frame(bus)
+
+    # Cell 0: multicolor decode, same code->color mapping as bitmap mode
+    # but using $D022/$D023 instead of the video matrix nibbles.
+    assert frame[BORDER_Y][BORDER_X + 0] == 6  # code 00 -> background
+    assert frame[BORDER_Y][BORDER_X + 2] == 1  # code 01 -> $D022
+    assert frame[BORDER_Y][BORDER_X + 4] == 2  # code 10 -> $D023
+    assert frame[BORDER_Y][BORDER_X + 6] == 7  # code 11 -> color RAM low 3 bits
+
+    # Cell 1: ordinary hi-res, unaffected by the global MCM=1.
+    for x in range(BORDER_X + 8, BORDER_X + 12):
+        assert frame[BORDER_Y][x] == 5
+    for x in range(BORDER_X + 12, BORDER_X + 16):
+        assert frame[BORDER_Y][x] == 6  # background, not multicolor
 
 
 def test_display_disabled_shows_background_only(vic):

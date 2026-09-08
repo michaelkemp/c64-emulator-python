@@ -1,6 +1,7 @@
 import pytest
 
 from c64.bus import Bus
+from c64.cartridge import Cartridge
 
 
 class FakeChip:
@@ -202,6 +203,70 @@ def test_read_color_nibble_reads_the_low_nibble_directly():
     bus = Bus()
     bus.write8(0xD800, 0xAB)
     assert bus.read_color_nibble(0) == 0x0B
+
+
+def make_cartridge(*, exrom, game, rom_lo=None, rom_hi=None):
+    return Cartridge(name="TEST", exrom=exrom, game=game, rom_lo=rom_lo, rom_hi=rom_hi)
+
+
+def test_no_cartridge_behaves_exactly_as_before(bus):
+    # Bus() with no `cartridge` argument at all defaults to the real
+    # "nothing plugged in" line state (EXROM=1, GAME=1) -- $8000-$9FFF
+    # stays plain RAM, matching every pre-cartridge test above.
+    assert bus.cart_exrom == 1 and bus.cart_game == 1
+    bus.write8(0x8000, 0x42)
+    assert bus.read8(0x8000) == 0x42
+
+
+def test_8k_cartridge_roml_needs_loram_and_hiram():
+    # Verified directly against VICE's own c64meminit_roml_config source
+    # array, not assumed: ROML needs LORAM *and* HIRAM, not just EXROM.
+    cart = make_cartridge(exrom=0, game=1, rom_lo=make_rom(0x2000, 0x99))
+    bus = Bus(basic_rom=make_rom(0x2000, 0xB0), cartridge=cart)
+
+    assert bus.read8(0x8000) == 0x99  # default reset state: LORAM=1, HIRAM=1
+    assert bus.read8(0xA000) == 0xB0  # 8K mode: BASIC ROM still visible at $A000
+
+    bus.write8(0x0000, 0xFF)
+    bus.write8(0x0001, 0b1111_1110)  # LORAM=0, HIRAM=1
+    assert bus.read8(0x8000) != 0x99  # ROML hidden -- RAM underneath instead
+
+
+def test_8k_cartridge_writes_fall_through_to_ram_underneath():
+    cart = make_cartridge(exrom=0, game=1, rom_lo=make_rom(0x2000, 0x99))
+    bus = Bus(cartridge=cart)
+    bus.write8(0x8000, 0x42)
+    assert bus.read8(0x8000) == 0x99  # write hidden behind the ROM overlay
+
+    bus.write8(0x0000, 0xFF)
+    bus.write8(0x0001, 0b1111_1110)  # LORAM=0: ROML hidden, RAM write now visible
+    assert bus.read8(0x8000) == 0x42
+
+
+def test_16k_cartridge_romh_needs_only_hiram_not_loram():
+    # The one genuinely surprising, verified-not-assumed asymmetry:
+    # ROMH (16K mode) needs HIRAM but *not* LORAM, unlike ROML.
+    cart = make_cartridge(exrom=0, game=0, rom_lo=make_rom(0x2000, 0x11), rom_hi=make_rom(0x2000, 0x22))
+    bus = Bus(basic_rom=make_rom(0x2000, 0xB0), cartridge=cart)
+
+    bus.write8(0x0000, 0xFF)
+    bus.write8(0x0001, 0b1111_1110)  # LORAM=0, HIRAM=1
+    assert bus.read8(0x8000) != 0x11  # ROML hidden (needs LORAM too)
+    assert bus.read8(0xA000) == 0x22  # ROMH still visible (HIRAM alone is enough)
+
+
+def test_16k_cartridge_romh_replaces_basic_rom():
+    cart = make_cartridge(exrom=0, game=0, rom_lo=make_rom(0x2000, 0x11), rom_hi=make_rom(0x2000, 0x22))
+    bus = Bus(basic_rom=make_rom(0x2000, 0xB0), cartridge=cart)
+    assert bus.read8(0xA000) == 0x22  # cartridge ROMH, not BASIC ROM
+
+
+def test_cartridge_romh_hidden_when_hiram_clear():
+    cart = make_cartridge(exrom=0, game=0, rom_lo=make_rom(0x2000, 0x11), rom_hi=make_rom(0x2000, 0x22))
+    bus = Bus(cartridge=cart)
+    bus.write8(0x0000, 0xFF)
+    bus.write8(0x0001, 0b1111_1101)  # HIRAM=0
+    assert bus.read8(0xA000) != 0x22
 
 
 def test_read16_write16_and_load_match_flat_memory_semantics(bus):

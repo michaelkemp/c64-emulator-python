@@ -229,6 +229,11 @@ tests/emulator/fixtures/dormann/
 # research item and docs/testing-strategy.md.
 roms/
 
+# Cartridge images (.crt) the user drops in locally to test cartridge
+# support -- never vendored, same reasoning as roms/ above. See
+# docs/roadmap.md's Phase 11 and scripts/run_c64.py's --cartridge-slot.
+cartridge-slot/
+
 # scripts/render_frame.py's and scripts/render_audio.py's default
 # output -- generated media, not something to track.
 /c64_boot.png

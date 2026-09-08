@@ -1,13 +1,14 @@
-"""MOS 6567/6569 VIC-II: registers, standard character-mode rendering,
-sprites, and collision detection.
+"""MOS 6567/6569 VIC-II: registers, standard character-mode and bitmap-mode
+rendering, sprites, and collision detection.
 
 See docs/vic-ii.md for the register map, the VIC-II's own bank-switched
 view of memory (independent of the CPU's -- see `Bus.read_vic`), the
 `$D019` write-1-to-clear interrupt semantics (vs. `$D01E`/`$D01F`'s
 read-clears-the-whole-register semantics), the sprite coordinate system,
-and this phase's known gaps (no bitmap/extended-color modes; badlines are
-modeled only as a queryable condition, not real CPU-cycle stealing, since
-nothing yet interleaves CPU and VIC-II cycle-by-cycle).
+the bitmap-mode memory layout, and this phase's known gaps (no extended
+color mode; badlines are modeled only as a queryable condition, not real
+CPU-cycle stealing, since nothing yet interleaves CPU and VIC-II
+cycle-by-cycle).
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ SPRITE_X_EXPANSION = 0x1D
 COLLISION_SPRITE_SPRITE, COLLISION_SPRITE_BG = 0x1E, 0x1F
 BORDER_COLOR = 0x20
 BACKGROUND_COLOR0 = 0x21
+BACKGROUND_COLOR1, BACKGROUND_COLOR2 = 0x22, 0x23
 SPRITE_MULTICOLOR0, SPRITE_MULTICOLOR1 = 0x25, 0x26
 SPRITE_COLOR_BASE = 0x27  # + sprite number (0-7)
 MSBX = 0x10  # X coordinate 9th bit, one per sprite
@@ -148,6 +150,10 @@ class VicII:
         return self._registers[CONTROL1] & 0x07
 
     @property
+    def bitmap_mode(self) -> bool:
+        return bool(self._registers[CONTROL1] & 0x20)
+
+    @property
     def multicolor_mode(self) -> bool:
         return bool(self._registers[CONTROL2] & 0x10)
 
@@ -168,12 +174,29 @@ class VicII:
         return (self._registers[MEMORY_POINTERS] & 0x0E) << 10
 
     @property
+    def bitmap_base(self) -> int:
+        """Bitmap mode reuses $D018, but only bit 3 matters (selecting
+        between the two 8KB halves of the current 16KB VIC bank) --
+        bits 2-1, which pick a character-generator bank in text mode,
+        are ignored here. A real, documented hardware quirk, not a
+        simplification -- see docs/vic-ii.md."""
+        return (self._registers[MEMORY_POINTERS] & 0x08) << 10
+
+    @property
     def border_color(self) -> int:
         return self._registers[BORDER_COLOR] & 0x0F
 
     @property
     def background_color(self) -> int:
         return self._registers[BACKGROUND_COLOR0] & 0x0F
+
+    @property
+    def background_color1(self) -> int:
+        return self._registers[BACKGROUND_COLOR1] & 0x0F
+
+    @property
+    def background_color2(self) -> int:
+        return self._registers[BACKGROUND_COLOR2] & 0x0F
 
     # -- sprite register fields -------------------------------------------
 
@@ -257,20 +280,31 @@ class VicII:
 
     def render_frame(self, bus) -> list[list[int]]:
         """A 384x272 grid of palette indices (see docs/vic-ii.md for why
-        that size): border color everywhere, the 320x200 text area drawn
-        in standard character mode (multicolor/bitmap/extended-color
-        modes aren't implemented yet), and sprites composited on top."""
+        that size): border color everywhere, the 320x200 display area
+        drawn in either standard character mode or bitmap mode (extended
+        color mode isn't implemented yet), and sprites composited on
+        top."""
         frame = [[self.border_color] * FRAME_WIDTH for _ in range(FRAME_HEIGHT)]
-        foreground = self._render_display(bus, frame)
+        if self.bitmap_mode:
+            foreground = self._render_bitmap(bus, frame)
+        else:
+            foreground = self._render_display(bus, frame)
         self._render_sprites(bus, frame, foreground)
         return frame
 
-    def _render_display(self, bus, frame: list[list[int]]) -> set[tuple[int, int]]:
-        bg = self.background_color
+    def _visible_area(self) -> tuple[int, int, int, int]:
+        """(col_offset, row_offset, visible_cols, visible_rows) -- shared
+        by both text and bitmap mode, since RSEL/CSEL (border size) don't
+        depend on which mode is active."""
         visible_cols = TEXT_COLS if self.cols_40 else TEXT_COLS - 2
         visible_rows = TEXT_ROWS if self.rows_25 else TEXT_ROWS - 1
         col_offset = (TEXT_COLS - visible_cols) // 2
         row_offset = (TEXT_ROWS - visible_rows) // 2
+        return col_offset, row_offset, visible_cols, visible_rows
+
+    def _render_display(self, bus, frame: list[list[int]]) -> set[tuple[int, int]]:
+        bg = self.background_color
+        col_offset, row_offset, visible_cols, visible_rows = self._visible_area()
 
         for y in range(DISPLAY_HEIGHT):
             for x in range(DISPLAY_WIDTH):
@@ -292,24 +326,115 @@ class VicII:
         # display boundary at the real default, clipping it.
         y_shift = self.y_scroll - 3
 
+        mcm = self.multicolor_mode
+        bg1, bg2 = self.background_color1, self.background_color2
+
         for row in range(row_offset, row_offset + visible_rows):
             for col in range(col_offset, col_offset + visible_cols):
                 screen_code = bus.read_vic(matrix_base + row * TEXT_COLS + col)
-                fg = bus.read_color_nibble(row * TEXT_COLS + col)
+                color_ram = bus.read_color_nibble(row * TEXT_COLS + col)
                 char_addr = char_base + screen_code * CHAR_PIXELS
+                # Real, per-cell hardware behavior, not a global switch:
+                # in multicolor mode, each cell's own color RAM bit 3
+                # decides whether *that* cell renders as 4-color
+                # multicolor or falls back to ordinary hi-res -- both
+                # can appear on the same MCM=1 screen. See docs/vic-ii.md.
+                cell_multicolor = mcm and bool(color_ram & 0x08)
+                fg = color_ram & 0x07 if cell_multicolor else color_ram
+
                 for line in range(CHAR_PIXELS):
                     byte = bus.read_vic(char_addr + line)
                     py = BORDER_Y + row * CHAR_PIXELS + line + y_shift
                     if not (BORDER_Y <= py < BORDER_Y + DISPLAY_HEIGHT):
                         continue
-                    for bit in range(CHAR_PIXELS):
-                        px = BORDER_X + col * CHAR_PIXELS + bit + x_scroll
-                        if not (BORDER_X <= px < BORDER_X + DISPLAY_WIDTH):
-                            continue
-                        pixel_on = (byte >> (7 - bit)) & 1
-                        frame[py][px] = fg if pixel_on else bg
-                        if pixel_on:
-                            foreground.add((py, px))
+                    if cell_multicolor:
+                        for pair in range(4):
+                            code = (byte >> (6 - pair * 2)) & 0b11
+                            if code == 0b00:
+                                continue
+                            color = {0b01: bg1, 0b10: bg2, 0b11: fg}[code]
+                            for sub in range(2):  # double-wide pixels
+                                px = BORDER_X + col * CHAR_PIXELS + pair * 2 + sub + x_scroll
+                                if not (BORDER_X <= px < BORDER_X + DISPLAY_WIDTH):
+                                    continue
+                                frame[py][px] = color
+                                foreground.add((py, px))
+                    else:
+                        for bit in range(CHAR_PIXELS):
+                            px = BORDER_X + col * CHAR_PIXELS + bit + x_scroll
+                            if not (BORDER_X <= px < BORDER_X + DISPLAY_WIDTH):
+                                continue
+                            pixel_on = (byte >> (7 - bit)) & 1
+                            frame[py][px] = fg if pixel_on else bg
+                            if pixel_on:
+                                foreground.add((py, px))
+        return foreground
+
+    def _render_bitmap(self, bus, frame: list[list[int]]) -> set[tuple[int, int]]:
+        """BMM=1: each text-mode cell's 8 bytes of "character data" come
+        from `bitmap_base` instead of a fixed character generator, in the
+        same cell order as the video matrix (cell index = row*40+col,
+        not a screen-code lookup) -- the video matrix byte itself still
+        comes from `video_matrix_base`, but now holds two direct color
+        values (high/low nibble) instead of a screen code. MCM=1
+        (multicolor bitmap, what real cartridges commonly use) halves
+        horizontal resolution to 4 double-wide "pixels" per cell, each
+        2 bits picking from: 00=background ($D021), 01=video matrix high
+        nibble, 10=video matrix low nibble, 11=color RAM (the same color
+        RAM text mode uses). MCM=0 (hi-res bitmap) is 8 real pixels per
+        cell, 1 bit each: 1=high nibble, 0=low nibble, no background/color
+        RAM involved. See docs/vic-ii.md."""
+        bg = self.background_color
+        col_offset, row_offset, visible_cols, visible_rows = self._visible_area()
+
+        for y in range(DISPLAY_HEIGHT):
+            for x in range(DISPLAY_WIDTH):
+                frame[BORDER_Y + y][BORDER_X + x] = bg
+
+        foreground: set[tuple[int, int]] = set()
+        if not self.display_enabled:
+            return foreground
+
+        matrix_base = self.video_matrix_base
+        bitmap_base = self.bitmap_base
+        x_scroll = self.x_scroll
+        y_shift = self.y_scroll - 3  # see _render_display for why -3
+        multicolor = self.multicolor_mode
+
+        for row in range(row_offset, row_offset + visible_rows):
+            for col in range(col_offset, col_offset + visible_cols):
+                cell = row * TEXT_COLS + col
+                color_byte = bus.read_vic(matrix_base + cell)
+                color_hi, color_lo = (color_byte >> 4) & 0x0F, color_byte & 0x0F
+                color_ram = bus.read_color_nibble(cell)
+                cell_addr = bitmap_base + cell * CHAR_PIXELS
+
+                for line in range(CHAR_PIXELS):
+                    byte = bus.read_vic(cell_addr + line)
+                    py = BORDER_Y + row * CHAR_PIXELS + line + y_shift
+                    if not (BORDER_Y <= py < BORDER_Y + DISPLAY_HEIGHT):
+                        continue
+                    if multicolor:
+                        for pair in range(4):
+                            code = (byte >> (6 - pair * 2)) & 0b11
+                            if code == 0b00:
+                                continue
+                            color = {0b01: color_hi, 0b10: color_lo, 0b11: color_ram}[code]
+                            for sub in range(2):  # double-wide pixels
+                                px = BORDER_X + col * CHAR_PIXELS + pair * 2 + sub + x_scroll
+                                if not (BORDER_X <= px < BORDER_X + DISPLAY_WIDTH):
+                                    continue
+                                frame[py][px] = color
+                                foreground.add((py, px))
+                    else:
+                        for bit in range(CHAR_PIXELS):
+                            px = BORDER_X + col * CHAR_PIXELS + bit + x_scroll
+                            if not (BORDER_X <= px < BORDER_X + DISPLAY_WIDTH):
+                                continue
+                            pixel_on = (byte >> (7 - bit)) & 1
+                            frame[py][px] = color_hi if pixel_on else color_lo
+                            if pixel_on:
+                                foreground.add((py, px))
         return foreground
 
     # -- sprites ------------------------------------------------------------

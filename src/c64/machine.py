@@ -22,6 +22,7 @@ from pathlib import Path
 from c6502.emulator.cpu import CPU
 
 from c64.bus import Bus
+from c64.cartridge import Cartridge
 from c64.cia import CIA6526
 from c64.joystick import Joystick
 from c64.keyboard_matrix import Cia1Ports, KeyboardMatrix
@@ -36,6 +37,7 @@ class Machine:
         basic_rom: bytes | None = None,
         kernal_rom: bytes | None = None,
         char_rom: bytes | None = None,
+        cartridge: Cartridge | None = None,
         sample_rate: int = 44100,
         enable_audio: bool = False,
     ) -> None:
@@ -52,6 +54,7 @@ class Machine:
             basic_rom=basic_rom,
             kernal_rom=kernal_rom,
             char_rom=char_rom,
+            cartridge=cartridge,
             vic=self.vic,
             sid=self.sid,
             cia1=self.cia1,
@@ -63,13 +66,21 @@ class Machine:
         self.enable_audio = enable_audio
 
     @classmethod
-    def from_roms(cls, roms_dir: Path | str = "roms/c64", **kwargs) -> "Machine":
+    def from_roms(
+        cls,
+        roms_dir: Path | str = "roms/c64",
+        *,
+        cartridge_path: Path | str | None = None,
+        **kwargs,
+    ) -> "Machine":
         roms_dir = Path(roms_dir)
         roms = {}
         for name, key in (("kernal", "kernal_rom"), ("basic", "basic_rom"), ("chargen", "char_rom")):
             path = roms_dir / name
             if path.exists():
                 roms[key] = path.read_bytes()
+        if cartridge_path is not None:
+            roms["cartridge"] = Cartridge.from_file(cartridge_path)
         return cls(**roms, **kwargs)
 
     def step(self) -> int:
