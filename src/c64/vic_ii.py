@@ -373,12 +373,18 @@ class VicII:
                     color = own_color
                 for ey in range(y_exp):
                     fy = BORDER_Y + y0 + row * y_exp + ey
-                    if not (0 <= fy < FRAME_HEIGHT):
+                    # Clipped to the interior display area, not the full
+                    # frame: the border has *higher* display priority
+                    # than sprites on real hardware (verified against
+                    # Christian Bauer's article, section 3.8.2's priority
+                    # diagram -- "Screen border" sits above "Sprite x" in
+                    # both MxDP configurations) -- see docs/vic-ii.md.
+                    if not (BORDER_Y <= fy < BORDER_Y + DISPLAY_HEIGHT):
                         continue
                     for ex in range(x_exp):
                         for sub in range(cell_width):
                             fx = BORDER_X + x0 + (cell * cell_width + sub) * x_exp + ex
-                            if not (0 <= fx < FRAME_WIDTH):
+                            if not (BORDER_X <= fx < BORDER_X + DISPLAY_WIDTH):
                                 continue
                             pixels[(fy, fx)] = color
         return pixels

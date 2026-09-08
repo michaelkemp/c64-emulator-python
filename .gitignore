@@ -151,6 +151,8 @@ activemq-data/
 .env
 .envrc
 .venv
+# This project's PyPy venv -- see docs/machine.md's Performance section.
+.venv-pypy/
 env/
 venv/
 ENV/

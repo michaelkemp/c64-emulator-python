@@ -76,6 +76,26 @@ def test_comparison_and_question_mark_characters_are_mapped():
         assert matrix.is_pressed(*KEY_POSITIONS[base_key]), ch
 
 
+def test_shifted_number_row_symbols_are_mapped():
+    # Regression test: an earlier version silently dropped #, $, and %
+    # entirely -- the last gap in the SHIFT+number-row pattern (1/2/6/7/8/9
+    # were already covered, 3/4/5 never filled in). $ specifically
+    # corrupted a real BASIC program using a string array (`DIM WN$(4)`
+    # typed as `DIM WN(4)`, a numeric array), which then raised a real
+    # ?TYPE MISMATCH ERROR the moment it tried to store a string into it
+    # -- caught by actually running the program through the real KERNAL,
+    # not by inspecting the mapping table. Verified empirically via GETIN,
+    # same as KeyboardMatrix.KEY_POSITIONS: SHIFT+3='#', SHIFT+4='$',
+    # SHIFT+5='%'.
+    for ch, base_key in (("#", "3"), ("$", "4"), ("%", "5")):
+        matrix = KeyboardMatrix()
+        typer = AutoTyper(matrix)
+        typer.type_text(ch)
+        typer.advance(1)
+        assert matrix.is_pressed(*KEY_POSITIONS["LSHIFT"]), ch
+        assert matrix.is_pressed(*KEY_POSITIONS[base_key]), ch
+
+
 def test_unmappable_character_is_skipped_without_getting_stuck():
     matrix = KeyboardMatrix()
     typer = AutoTyper(matrix)
@@ -110,11 +130,16 @@ def test_full_program_line_drains_the_queue_eventually():
     assert not typer.busy
 
 
-def test_hold_and_gap_cycle_counts_match_the_empirically_verified_minimums():
-    # See module docstring: measured against the real KERNAL's own GETIN,
-    # hold >=6000 cycles and gap >=2000-4000 cycles register reliably.
-    # These constants use a safety margin above that -- this test just
-    # guards against someone tightening them back down without re-running
-    # that verification.
-    assert HOLD_CYCLES >= 6000
-    assert GAP_CYCLES >= 4000
+def test_hold_and_gap_cycle_counts_clear_one_full_jiffy_irq_period():
+    # See module docstring: a held key must survive at least one full
+    # ~16,421-cycle CIA1 Timer A jiffy IRQ period, or it can land entirely
+    # between two of the KERNAL's keyboard scans and be dropped. An
+    # earlier version of this guard only checked against a much smaller
+    # (and wrong) empirically-"verified" minimum, measured by a harness
+    # that didn't actually drive the real interrupt-driven scan -- see
+    # test_auto_type_integration.py for the real, ROM-booted regression
+    # test that caught this. This test just guards against someone
+    # tightening the constants back down without re-running that.
+    JIFFY_IRQ_PERIOD = 16_421
+    assert HOLD_CYCLES > JIFFY_IRQ_PERIOD
+    assert GAP_CYCLES > JIFFY_IRQ_PERIOD

@@ -7,21 +7,35 @@ this or on pygame.
 Real-time pacing, almost for free: `CYCLES_PER_FRAME` is exactly one PAL
 frame's worth of PHI2 cycles (`PAL_LINES_PER_FRAME * CYCLES_PER_LINE`).
 Running the machine for exactly that many cycles between each display
-update, and capping the display to the real ~50Hz PAL rate
-(`target_fps`), happens to keep the *simulated* machine running at
-approximately real C64 speed too -- without this being the dedicated
-wall-clock pacing `docs/machine.md` still flags as missing (that's
-Phase 10, once real audio needs genuinely precise timing). It's a
-side effect good enough for watching the screen update at a sane pace.
+update, and capping the display to the real PAL rate (`target_fps`),
+happens to keep the *simulated* machine running at approximately real
+C64 speed too -- without this being the dedicated wall-clock pacing
+`docs/machine.md` still flags as missing (that's Phase 10, once real
+audio needs genuinely precise timing). It's a side effect good enough
+for watching the screen update at a sane pace.
+
+**`target_fps` must be the *exact* rate these constants imply, not a
+rounded "50"**: `PAL_CLOCK_HZ / CYCLES_PER_FRAME` is ~50.1245Hz, not
+50.0 -- real PAL C64s really do run slightly above 50Hz (a well-known,
+correctly-cited fact, not this project's own rounding). A hardcoded
+`target_fps=50` found this way: it paces the loop to a real 20.000ms/
+iteration, but one iteration's worth of *audio* content is only
+CYCLES_PER_FRAME/PAL_CLOCK_HZ = ~19.951ms -- a persistent ~0.25%
+shortfall, not just random scheduling jitter, that slowly starves
+`AudioOutput`'s buffered chunks over a sustained note. Caught while
+diagnosing real playback that came out choppy even after `AudioOutput`
+itself stopped dropping chunks (see its own module docstring) -- this
+was the other half of the real cause.
 """
 
 from __future__ import annotations
 
 import pygame
 
-from c64.vic_ii import CYCLES_PER_LINE, FRAME_HEIGHT, FRAME_WIDTH, PALETTE, PAL_LINES_PER_FRAME
+from c64.vic_ii import CYCLES_PER_LINE, FRAME_HEIGHT, FRAME_WIDTH, PALETTE, PAL_CLOCK_HZ, PAL_LINES_PER_FRAME
 
 CYCLES_PER_FRAME = PAL_LINES_PER_FRAME * CYCLES_PER_LINE
+REAL_PAL_FPS = PAL_CLOCK_HZ / CYCLES_PER_FRAME  # ~50.1245Hz, not 50.0 -- see module docstring
 
 _PALETTE_BYTES = [bytes(rgb) for rgb in PALETTE]
 
@@ -34,7 +48,7 @@ def frame_to_rgb_bytes(frame: list[list[int]]) -> bytes:
 
 
 class Screen:
-    def __init__(self, scale: int = 2, target_fps: int = 50) -> None:
+    def __init__(self, scale: int = 2, target_fps: float = REAL_PAL_FPS) -> None:
         pygame.init()
         pygame.display.set_caption("c64-emulator-python")
         self.scale = scale

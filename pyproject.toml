@@ -6,7 +6,13 @@ build-backend = "setuptools.build_meta"
 name = "c64emu"
 version = "0.0.1"
 description = "A Python emulator for the Commodore 64"
-requires-python = ">=3.11"
+# Lowered from 3.11 once PyPy was confirmed as a genuinely faster, fully
+# correct runtime for this project (see docs/machine.md's Performance
+# section) -- the apt-packaged pypy3 available at the time only targets
+# Python 3.9 language level, and nothing here actually needs anything
+# newer (verified: no match/case, except*, tomllib, or typing.Self
+# anywhere in src/, scripts/, or tests/).
+requires-python = ">=3.9"
 readme = "CLAUDE.md"
 dependencies = []
 
@@ -15,7 +21,11 @@ dev = ["pytest"]
 # The emulation core (src/c64/, src/c6502/) has zero runtime dependencies
 # -- this is only needed for src/peripherals/ (real screen/keyboard/audio
 # I/O), starting with screen output in Phase 8. See docs/roadmap.md.
-peripherals = ["pygame"]
+# sounddevice (PortAudio bindings, needs libportaudio2 on the system --
+# already present on Debian/Ubuntu desktops, `apt install libportaudio2`
+# otherwise) replaced pygame.mixer for audio output specifically -- see
+# peripherals/audio.py's module docstring for why.
+peripherals = ["pygame", "sounddevice"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -24,6 +34,6 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
-    "slow: exercises the full Klaus Dormann 6502 functional test suite (~30M steps, ~1-2 min); requires fetching its GPLv3 test binary first via scripts/fetch_dormann_tests.sh",
+    "slow: an expensive integration test -- either the full Klaus Dormann 6502 functional test suite (~30M steps, ~1-2 min; requires fetching its GPLv3 test binary first via scripts/fetch_dormann_tests.sh) or a real end-to-end AutoTyper run through the staged ROMs (tens of seconds; requires scripts/stage_roms.sh)",
 ]
 addopts = "-m 'not slow'"

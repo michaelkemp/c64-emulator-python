@@ -225,6 +225,32 @@ def test_sprite_register_helpers_decode_bits_per_sprite(vic):
     assert vic.sprite_y(0) == 0  # not written yet
 
 
+def test_sprites_are_clipped_by_the_border_not_drawn_over_it():
+    # Regression test: the border has *higher* display priority than
+    # sprites on real hardware (verified against Christian Bauer's
+    # article, section 3.8.2 -- "Screen border" sits above "Sprite x" in
+    # the priority diagram; border masking isn't defeated without the
+    # real raster-timing tricks this project doesn't implement). An
+    # earlier version clipped sprites to the full frame instead of the
+    # interior display area, letting them render on top of the border.
+    vic = VicII()
+    bus = FakeBus()
+    bus.mem[0x3F8] = 5
+    bus.mem[0x140] = 0xFF  # row 0: first 8 pixels on
+    vic.write_register(0, 24 - 4)  # sprite 0 X: 4 pixels left of the display area
+    vic.write_register(1, 50)
+    vic.write_register(SPRITE_ENABLE, 0x01)
+    vic.write_register(SPRITE_COLOR_BASE, 2)
+    vic.write_register(BORDER_COLOR, 14)
+
+    frame = vic.render_frame(bus)
+
+    for x in range(BORDER_X - 4, BORDER_X):
+        assert frame[BORDER_Y][x] == 14  # still border color, not the sprite
+    for x in range(BORDER_X, BORDER_X + 4):
+        assert frame[BORDER_Y][x] == 2  # the visible part of the sprite
+
+
 def test_hires_sprite_renders_at_the_documented_coordinate_offset():
     vic = VicII()
     bus = FakeBus()

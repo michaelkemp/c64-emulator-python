@@ -17,39 +17,66 @@ per character. That's reliable but was measured at ~1 character per
 second in practice -- because each "frame" in that loop pays the full
 cost of CPU+chip emulation *and* screen rendering *and* audio generation
 *and* event polling, not just the minimum needed to satisfy the real
-KERNAL's keyboard scan. Measured empirically (not guessed) against the
-real KERNAL's own `GETIN` routine: a key held for as few as ~6000 PHI2
-cycles (roughly a third of one video frame's worth) already registers
-reliably, and gaps as short as ~2000-4000 cycles are enough to
-distinguish a released-then-repressed *same* key from one held
-continuously -- with some quantization noise near the low end from
-aligning with the KERNAL's own ~17000-cycle scan period. `HOLD_CYCLES`/
-`GAP_CYCLES` below use a safety margin above those measured minimums,
-verified against real multi-character sequences including same-key
-repeats ("AABBCC", "ABABAB"). `advance(cycles)` replaces `pump()`,
-matching this project's established `tick(cycles)` shape
-(`CIA6526`/`VicII`/`AudioOutput`) -- callers drive it with the same
-cycle count `Machine.step()` returns, and critically should do so in a
-tight loop *without* paying per-step render/audio/event costs while
-`busy` (see `scripts/run_c64.py`), which is where the real speedup comes
-from -- not from cutting the hold/gap durations alone.
+KERNAL's keyboard scan. `advance(cycles)` replaces `pump()`, matching
+this project's established `tick(cycles)` shape (`CIA6526`/`VicII`/
+`AudioOutput`) -- callers drive it with the same cycle count
+`Machine.step()` returns, and critically should do so in a tight loop
+*without* paying per-step render/audio/event costs while `busy` (see
+`scripts/run_c64.py`), which is where the real speedup comes from.
+
+**The hold/gap cycle counts were wrong once, in a way that shipped**:
+an earlier revision set `HOLD_CYCLES = 8_000` / `GAP_CYCLES = 20_000`,
+"verified" against the real KERNAL's `GETIN` routine called directly in
+a standalone test harness. That harness was misleading -- it didn't
+drive the real machine's interrupt-driven keyboard scan the way normal
+execution does, so it couldn't have caught the actual failure mode.
+Real hardware (and this emulator, correctly) scans the keyboard matrix
+and runs its debounce logic once per jiffy IRQ, driven by CIA1 Timer A
+-- confirmed here by reading back `$DC04`/`$DC05` after boot, which
+shows a period of ~16,421 PHI2 cycles (~60Hz at the PAL clock). A key
+held for *less* than one full IRQ period can land entirely between two
+scans and never be seen at all; `HOLD_CYCLES = 8_000` was well under
+half of that. This wasn't a hypothetical -- the user ran
+`--type-file examples/sprite_test.bas` and got back a screen full of
+dropped characters and `?SYNTAX ERROR`s, reproduced exactly with a
+headless script driving `Machine` + `AutoTyper` the same way
+`run_c64.py` does. Swept hold/gap values against that same real,
+booted-ROM harness (not the misleading `GETIN`-only one): both values
+need to comfortably clear the ~16,421-cycle IRQ period -- `16_421`
+itself was still marginal (dropped a character in a plain "HELLO"),
+`17_000` was clean, and `20_000`/`20_000` reproduced the *exact* real
+`examples/sprite_test.bas` file with zero corruption end-to-end
+(typed the whole program, then `LIST`ed it back with no `?SYNTAX
+ERROR` anywhere). `HOLD_CYCLES`/`GAP_CYCLES` below use that verified
+value, not the old broken one -- see
+`tests/peripherals/test_auto_type_integration.py`, which actually boots
+the real staged ROMs and types a real multi-line program end-to-end,
+unlike `test_auto_type.py`'s `KeyboardMatrix`-in-isolation tests, which
+can't observe this class of bug at all since they never run interrupts.
 
 Covers what a simple BASIC test program needs: letters, digits, space,
 RETURN, and common punctuation -- including the shifted symbols
-(`"`, `(`, `)`, `!`, `&`, `'`, `<`, `>`, `?`), verified empirically the
-same way `KeyboardMatrix.KEY_POSITIONS` was (see docs/cia.md), not
-guessed.
+(`"`, `(`, `)`, `!`, `&`, `'`, `<`, `>`, `?`, `#`, `$`, `%`), verified
+empirically the same way `KeyboardMatrix.KEY_POSITIONS` was (see
+docs/cia.md), not guessed. `#`/`$`/`%` (SHIFT+3/4/5) were the last gap in
+this pattern -- found the same way `<`/`>`/`?` were: a real BASIC program
+(this one using a string array, `DIM WN$(...)`) got silently corrupted
+(`$` dropped entirely, turning a string array into a numeric one --
+`?TYPE MISMATCH ERROR` the moment it tried to store a string into it) by
+actually running it through the real KERNAL, not by inspecting the
+mapping table.
 """
 
 from __future__ import annotations
 
 from c64.keyboard_matrix import KeyboardMatrix
 
-# Empirically measured minimums (see module docstring): hold >=6000,
-# gap >=2000-4000 with some quantization noise near the low end. These
-# use a comfortable safety margin above that, verified against real
-# multi-character sequences via the KERNAL's own GETIN routine.
-HOLD_CYCLES = 8_000
+# Verified against the real, booted KERNAL's interrupt-driven keyboard
+# scan (see module docstring) -- both must comfortably clear CIA1 Timer
+# A's ~16,421-cycle jiffy IRQ period, or a held key can land entirely
+# between two scans and be dropped. 20,000 reproduced the real
+# examples/sprite_test.bas file with zero corruption end-to-end.
+HOLD_CYCLES = 20_000
 GAP_CYCLES = 20_000
 
 # Verified empirically, the same way as KEY_POSITIONS: SHIFT + this key
@@ -57,6 +84,7 @@ GAP_CYCLES = 20_000
 _SHIFTED = {
     '"': "2", "(": "8", ")": "9", "!": "1", "&": "6", "'": "7",
     "<": "COMMA", ">": "PERIOD", "?": "SLASH",
+    "#": "3", "$": "4", "%": "5",
 }
 _DIRECT = {
     " ": "SPACE", "\n": "RETURN", "\r": "RETURN",

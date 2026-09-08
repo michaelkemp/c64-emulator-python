@@ -67,11 +67,58 @@ waste whenever nothing consumes its audio output. `Machine`'s
 `enable_audio` flag (default `False`) skips it entirely until Phase 10
 needs it, which is most of the gap above. What's left (29.7ms, still
 short of 20ms) is genuine CPU+CIA+VIC-II emulation cost, not identified
-waste -- this project has made no deliberate speed-optimization pass
-beyond that one fix, correctness having been the priority through
-Phases 0-8. A real speed effort (profiling the remaining hot paths,
-PyPy, or otherwise) is explicitly **not** part of this phase; revisit if
-and when it's actually needed.
+waste -- this project made no deliberate speed-optimization pass beyond
+that one fix through Phases 0-8, correctness having been the priority.
+
+**A real speed effort turned out to be worth doing, and PyPy is it.**
+Raised once real playback of `examples/sound_test.bas` came out as short
+stuttering ticks instead of a steady note -- a direct, audible
+consequence of `enable_audio=True` running well under real-time (see
+above): `pygame.mixer` runs dry between generated chunks and re-triggers
+playback from silence each time, correct pitch but no continuity. Tried
+PyPy instead of guessing at micro-optimizations first, since it costs
+nothing to test (same Python source, no code changes) and this is
+exactly the kind of tight, hot, pure-Python-bytecode loop its JIT
+targets well. Measured on this project's own real workloads, same
+machine, back-to-back against CPython:
+
+| Benchmark | CPython | PyPy | Speedup |
+|---|---|---|---|
+| Core loop, `enable_audio=False` | 740,160 Hz (75% of real PAL) | 4,943,701 Hz (**502%** of real PAL) | 6.7x |
+| Core loop, `enable_audio=True` | 268,935 Hz (27% of real PAL) | 2,054,321 Hz (**208%** of real PAL) | 7.6x |
+| Dormann 30.6M-step CPU suite | 74.0s | 8.4s | 8.8x |
+| Real ROM boot + AutoTyper (full integration test) | 36.0s | 7.3s | 4.9x |
+
+Every test in the suite -- including the ones needing `pygame`, which
+has a prebuilt PyPy wheel, no compilation required -- passes identically
+under PyPy; the Dormann suite in particular is a strong correctness
+signal since it's a bit-for-bit CPU core validation, not just a speed
+benchmark. With audio on, PyPy runs at **2.08x real-time** instead of
+CPython's 3.66x *slower* -- comfortably outpacing playback consumption
+instead of falling behind it, which should eliminate the stuttering
+outright (not yet re-confirmed by ear through real `pygame.mixer`
+output, only measured at the `Machine`-loop level).
+
+**Update**: `pygame.mixer` itself turned out to have a real, separate bug
+(discrete `Sound`-object queueing isn't suited to continuously-synthesized
+audio, regardless of chunk size or buffering) -- replaced with
+`sounddevice`'s continuous, callback-driven streaming. See
+`peripherals/audio.py`'s module docstring and `docs/roadmap.md`'s
+post-Phase-10 addenda for the full diagnostic chain.
+
+One real caveat, not glossed over: the `pypy3` package available via
+`apt` at the time of this measurement only targets Python **3.9**
+language level. `requires-python` was lowered from `3.11` to `3.9`
+specifically to make this a supported combination (verified first that
+nothing in this codebase actually uses 3.10+-only syntax -- no
+`match`/`case`, `except*`, `tomllib`, or `typing.Self`). A newer PyPy
+build with 3.10/3.11 support exists upstream but isn't in `apt` on this
+machine; revisit if this project ever needs newer language features.
+**Recommended**: use PyPy for any audio-enabled run, or generally once
+available -- `pip install pypy3` isn't a thing; get it via your system
+package manager (`apt install pypy3` on Debian/Ubuntu) or
+[pypy.org](https://www.pypy.org/download.html), then `pypy3 -m venv` +
+`pip install -e ".[dev,peripherals]"` the same as CPython.
 
 ## Verified
 

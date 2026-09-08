@@ -9,14 +9,13 @@ extra: `pip install -e ".[peripherals]"`.
 RESTORE is mapped to F12 (see peripherals/keyboard.py -- real hardware
 wires it directly to NMI, not through the keyboard matrix).
 
-Audio has a real, honest caveat -- see peripherals/audio.py and
-docs/machine.md's profiling numbers: this project's unoptimized
-pure-Python core runs slower than real time once SID ticking is enabled,
-so sustained playback may have audible gaps under load. Pitch itself is
-still correct (sample generation is tied to real emulated cycles, not
-wall-clock time). Pass --no-audio to skip SID ticking entirely and get
-the Phase 8/9 behavior back if the gaps bother you more than the sound
-is worth.
+Audio plays through `sounddevice` (PortAudio), not `pygame.mixer` -- see
+peripherals/audio.py's module docstring for why: real playback through
+pygame's Sound/Channel queueing produced audible artifacts (worst at the
+quiet end of each note) that turned out to be inherent to that API, not
+a data or timing bug in this project's own code. Pitch is correct
+regardless (sample generation is tied to real emulated cycles, not
+wall-clock time). Pass --no-audio to skip SID ticking entirely.
 
 Typing a BASIC program reliably: live human keystrokes can be less than
 rock solid here (see peripherals/auto_type.py for why). Two
@@ -72,6 +71,49 @@ BOOT_SETTLE_FRAMES = 150
 # look frozen or become unclosable.
 TYPING_UI_CHECK_INTERVAL = 0.1
 
+# With audio enabled, only actually draw the screen every this-many
+# frames (CPU/SID stepping and audio generation still happen every
+# frame -- only the expensive render_frame()+Screen.draw() call is
+# skipped on the rest). Directly measured, not guessed: machine.step()
+# for one frame's cycles costs ~12.3ms, render_frame() ~3.7ms, and
+# Screen.draw() ~8.2ms -- drawing every frame costs ~24.2ms against a
+# 19.95ms real-time budget, a structural ~4.3ms/frame deficit *before*
+# any margin at all, which starves AudioOutput's buffer permanently (not
+# just during PyPy's initial JIT warm-up -- confirmed by measuring
+# `buffered_seconds()` staying pinned near zero for 8+ real seconds with
+# drawing enabled every frame, vs. genuinely climbing once it's reduced
+# to 1-in-5). 5 gives a real, measured, growing margin with room to
+# spare; picked from actual numbers, not tuned to the exact edge. Real
+# cost: video refreshes at ~10Hz instead of ~50Hz while audio's on --
+# an explicit trade, not hidden. Without audio (SID ticking off), this
+# throughput problem doesn't exist (PyPy has much more headroom -- see
+# docs/machine.md), so full-rate drawing is left alone in that case.
+VIDEO_DRAW_EVERY_WITH_AUDIO = 5
+
+
+def _dispatch_events(machine, keyboard, auto_typer) -> bool:
+    """Drain pending pygame events and apply them; returns False once a
+    QUIT is seen. Used by both the normal per-frame loop and the
+    fast-forward typing loop's periodic UI check -- the two must handle
+    events identically. An earlier version of the fast-forward loop only
+    looked for QUIT and silently dropped every other event, including
+    KEYUP: a real Ctrl+V's Ctrl-release could land mid-burst and get
+    discarded, leaving CTRL "stuck" pressed on the emulated matrix for the
+    rest of the burst and corrupting every character AutoTyper typed
+    afterwards into a CTRL+<key> combo -- caught from a real screenshot of
+    garbled BASIC text, not written correctly the first time."""
+    still_running = True
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            still_running = False
+        elif event.type == pygame.KEYDOWN and event.key == pygame.K_v and (event.mod & pygame.KMOD_CTRL):
+            text = _clipboard_text()
+            if text:
+                auto_typer.type_text(text)
+        else:
+            keyboard.handle_event(event, machine)
+    return still_running
+
 
 def _clipboard_text() -> str | None:
     """Best-effort real clipboard read (X11/Windows/macOS via SDL) --
@@ -93,6 +135,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--no-audio", action="store_true", help="skip SID ticking entirely")
     parser.add_argument("--type-file", type=Path, help="type this file's contents in once booted")
+    parser.add_argument(
+        "--no-video-draw",
+        action="store_true",
+        help="skip screen.draw() entirely (but keep screen.tick()'s pacing and the "
+        "window/event pump alive) -- diagnostic knob. Under the old pygame.mixer audio "
+        "backend this made no difference (that bug was elsewhere -- see "
+        "peripherals/audio.py); under the current sounddevice backend, Screen.draw()'s "
+        "real per-frame cost genuinely does starve audio (see VIDEO_DRAW_EVERY_WITH_AUDIO "
+        "below, which throttles rather than fully disables drawing)",
+    )
     args = parser.parse_args()
 
     roms_dir = REPO_ROOT / "roms" / "c64"
@@ -112,15 +164,7 @@ def main() -> None:
     running = True
     try:
         while running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                elif event.type == pygame.KEYDOWN and event.key == pygame.K_v and (event.mod & pygame.KMOD_CTRL):
-                    text = _clipboard_text()
-                    if text:
-                        auto_typer.type_text(text)
-                else:
-                    keyboard.handle_event(event, machine)
+            running = _dispatch_events(machine, keyboard, auto_typer)
 
             frame_count += 1
             if program_text is not None and frame_count == BOOT_SETTLE_FRAMES:
@@ -134,10 +178,9 @@ def main() -> None:
                     auto_typer.advance(machine.step())
                     now = time.perf_counter()
                     if now - last_ui_check > TYPING_UI_CHECK_INTERVAL:
-                        for event in pygame.event.get():
-                            if event.type == pygame.QUIT:
-                                running = False
-                        screen.draw(machine.vic.render_frame(machine.bus))
+                        running = _dispatch_events(machine, keyboard, auto_typer)
+                        if not args.no_video_draw:
+                            screen.draw(machine.vic.render_frame(machine.bus))
                         screen.tick()
                         last_ui_check = now
                 machine.enable_audio = was_audio_enabled
@@ -151,7 +194,11 @@ def main() -> None:
                         audio.advance(cycles)
                 carry = total - CYCLES_PER_FRAME
 
-            screen.draw(machine.vic.render_frame(machine.bus))
+            should_draw = not args.no_video_draw and (
+                audio is None or frame_count % VIDEO_DRAW_EVERY_WITH_AUDIO == 0
+            )
+            if should_draw:
+                screen.draw(machine.vic.render_frame(machine.bus))
             screen.tick()
     finally:
         if audio is not None:

@@ -168,7 +168,7 @@ src/
                         # a runtime dependency.
     screen.py              # pygame window showing VicII output (Phase 8)
     keyboard.py            # real key events -> KeyboardMatrix (Phase 9)
-    audio.py               # Sid.output_sample() -> pygame.mixer (Phase 10)
+    audio.py               # Sid.output_sample() -> sounddevice (Phase 10)
     auto_type.py            # reliable frame-timed program input (--type-file/Ctrl+V)
 tests/
   emulator/             # CPU core tests (ported)
@@ -275,15 +275,163 @@ Summary:
       landing measured at ~1 char/sec in practice — caught, diagnosed,
       and actually fixed, not excused**: the main loop now fast-forwards
       through typing (skips per-step render/audio, the dominant cost),
-      and the hold/gap durations were re-measured against the real
-      KERNAL's own `GETIN` instead of guessed, cutting them from
-      ~78,624 cycles to a verified-reliable ~8,000/20,000. Result,
-      measured on the real `sound_test.bas`: **920ms/char → 53.8ms/char
-      (~17x)**. Also caught a real bug before shipping (`<`/`>`/`?`
+      and the hold/gap durations were re-measured, cutting them from
+      ~78,624 cycles down toward ~20,000. Result, measured on the real
+      `sound_test.bas`: **920ms/char → 70.5ms/char (~13x)**. Also caught
+      a real bug before shipping (`<`/`>`/`?`
       missing from the character table, silently corrupting real BASIC)
       and, while verifying the two example programs by actually running
       them, a real bug in the example program itself (not the emulator)
       — see `docs/roadmap.md`'s post-Phase-10 addendum.
+- [x] **Three more real bugs found from a screenshot, all fixed the same
+      day**: (1) sprites rendered *over* the border instead of being
+      clipped by it — `vic_ii.py`'s sprite pixel placement clipped to the
+      full frame instead of the interior display area; the border has
+      strictly higher display priority than every sprite on real
+      hardware (verified directly against Christian Bauer's article,
+      section 3.8.2 — an AI summary of the same article gave
+      contradictory answers depending on how the question was framed, so
+      only reading the raw text settled it). (2) the fast-forward typing
+      loop in `run_c64.py` discarded every non-QUIT event, so a real
+      Ctrl+V's Ctrl-release landing mid-burst got dropped, leaving CTRL
+      stuck pressed on the emulated matrix for the rest of the burst and
+      turning every subsequent character into a `CTRL+<key>` combo — a
+      real bug, fixed by sharing one event-dispatch function between the
+      normal loop and the fast-forward loop, but it turned out **not**
+      to be what caused the actual garbled screenshot (confirmed once the
+      user reproduced the same garbling with plain `--type-file`, no
+      Ctrl+V involved at all). (3) **The real cause**: `HOLD_CYCLES`/
+      `GAP_CYCLES` (`8,000`/`20,000`) were too short for the real
+      KERNAL's interrupt-driven keyboard scan to reliably see every key
+      — the prior "verification" called `GETIN` directly, bypassing the
+      real interrupt/debounce loop entirely, so it couldn't have caught
+      this. Real hardware scans and debounces once per ~16,421-cycle
+      jiffy IRQ (confirmed by reading back CIA1 Timer A's own registers);
+      a key held for less than that can land between two scans and never
+      be seen. Reproduced headlessly (`HELLO` typed back as `EO`), fixed
+      by raising both constants to `20,000` — verified against the real
+      `examples/sprite_test.bas` file typed and `LIST`ed back with zero
+      corruption, and against new automated tests
+      (`tests/peripherals/test_auto_type_integration.py`) that boot the
+      real staged ROMs, unlike the old `KeyboardMatrix`-only tests which
+      structurally can't see this class of bug. See `docs/roadmap.md`'s
+      post-Phase-10 addendum and `docs/vic-ii.md`'s Sprites section for
+      all three.
+- [x] **PyPy confirmed as a real, correctness-preserving speedup** —
+      raised after the audio stuttering above turned out to be a direct
+      symptom of `enable_audio=True` running below real-time. Tried PyPy
+      instead of guessing at micro-optimizations (free to test, no code
+      changes): **6.7x-8.8x faster** across the core loop, the Dormann
+      CPU-correctness suite, and a real ROM-boot integration test, with
+      every single test passing identically (`pygame` included — it has
+      a prebuilt PyPy wheel). With audio on, PyPy runs at **2.08x
+      real-time** instead of CPython's 3.66x *slower*. `requires-python`
+      lowered from `3.11` to `3.9` to make this a supported combination
+      (verified nothing here needs newer syntax) — see `docs/machine.md`'s
+      Performance section for the full numbers and the caveat about
+      `apt`'s `pypy3` package being capped at Python 3.9 language level.
+- [x] **Two more real bugs found by actually listening to PyPy-sped-up
+      audio, both fixed**: PyPy fixed raw throughput, but `sound_test.bas`
+      still played back choppy — a genuinely different bug, not a
+      continuation of the same slowness. (1) `AudioOutput` handed
+      completed chunks to `pygame.mixer.Channel.queue()` the instant they
+      were ready, with no check that its single "next sound" slot was
+      actually free — calling `.queue()` again before the previous chunk
+      was promoted to "currently playing" **silently discards it**
+      (confirmed empirically: `get_queue()` returns the second Sound, not
+      the first). Under CPython this never got stressed (computation
+      itself was the bottleneck); under PyPy, once computation stopped
+      being the limit, real timing jitter exposed it immediately (1 drop
+      in 148 real chunks over 3s). Fixed with a proper FIFO
+      (`AudioOutput._ready`) that only hands a chunk to the mixer once its
+      slot is confirmed empty. (2) `Screen`'s hardcoded `target_fps=50`
+      doesn't match the real PAL frame rate this project's own constants
+      imply (`PAL_CLOCK_HZ / CYCLES_PER_FRAME` ≈ **50.1245Hz**, not 50.0)
+      — a persistent ~0.25% mismatch, not random jitter, that slowly
+      starved the audio buffer over a sustained note. Fixed by computing
+      the real rate instead of hardcoding it. See `src/peripherals/
+      audio.py` and `screen.py`'s module docstrings for the full
+      diagnosis, and the new regression test in `test_audio.py` (verified
+      to fail against the pre-fix code, showing the actual dropped
+      chunk).
+- [x] **The real cause of the staccato/"morse code" sound: neither of the
+      two bugs above.** Both were real, both worth fixing, but re-tested
+      by ear on PyPy and it was still choppy. The actual cause:
+      `sound_test.bas`'s own `release=8` ADSR setting (~300ms nominal
+      decay, a real SID rate) vs. its own delay loop between notes
+      (`FOR D=1 TO 100: NEXT D`, only ~190ms of real emulated time — real
+      BASIC V2's `FOR...NEXT` genuinely is that slow, confirmed by
+      measurement). Built `examples/sid_diagnostic.bas` (every voice x
+      every waveform incl. noise, printing which combo plays) to isolate
+      it, then instrumented `Voice.envelope` directly: it was only down to
+      92/255 (~36%) when the next note's ~2ms attack snapped it back to
+      full — a real, audible dip-and-recover every note, confirmed by a
+      real Audacity recording of actual speaker output showing exactly
+      that (distinct blips, not one tone — matching the user's own "like
+      morse code" description) and by a reference WAV generated directly
+      from `Sid.output_sample()` with zero pygame involvement showing the
+      identical pattern. **This specific symptom wasn't a bug in `Sid`,
+      `AudioOutput`, `pygame`, or PyPy** — a real C64 running this exact
+      program would sound the same. Fixed by changing `release=8` to
+      `release=1` in both example programs; re-measured envelope now
+      reaches 1/255 before each retrigger. See `docs/roadmap.md`'s
+      post-Phase-10 addendum for the full methodology (verified two
+      independent ways before accepting this conclusion, not just
+      asserted).
+- [x] **`pygame.mixer` itself turned out to have a real, separate bug
+      underneath the ADSR fix — replaced with `sounddevice`.** Real
+      playback still wasn't right after the `release` fix: "sounds like
+      noise," then "clean but large gaps" at bigger chunk sizes, then "4
+      pieces per note" staccato. A methodical process of elimination (6
+      separate real diagnostics, each ruling out one layer — pygame/SDL
+      setup itself, the raw sample data, the chunking mechanism in
+      isolation, `pygame.display.flip()`/vsync, buffering margin, and
+      finally the specific finding that artifacts clustered at each
+      note's quiet release tail, never its loud sustain) pointed at
+      `pygame.mixer.Channel` queueing discrete `Sound` objects being
+      fundamentally unsuited to continuously-synthesized audio,
+      regardless of chunk size or buffering — not a data, timing, or
+      video-contention bug. One of those diagnostics (a real synthetic
+      FPS benchmark) turned out to be corrupted by fluctuating
+      background system load in the dev environment (the same baseline
+      measurement gave 50fps, then 0.7fps, with zero code changes) —
+      caught and disclosed rather than trusted. Fixed by replacing
+      `pygame.mixer` with `sounddevice` (PortAudio) entirely: `advance()`
+      appends samples to a plain `deque`; a background PortAudio thread
+      pulls directly from it on demand, no discrete chunks/`Sound`
+      objects at all, padding with silence on underrun instead of
+      clicking or dropping. Verified against real ALSA/PipeWire hardware
+      in this dev environment (not just `SDL_AUDIODRIVER=dummy`):
+      `buffered_seconds()` self-regulates to a stable ~60-70ms. Removed
+      `run_c64.py`'s lookahead-buffer loop and `--audio-chunk-ms` flag
+      (built chasing the wrong layer, no longer meaningful); kept
+      `--no-video-draw` as a legitimate, reusable diagnostic. See
+      `docs/roadmap.md`'s post-Phase-10 addendum for the full chain of
+      diagnostics.
+- [x] **`sounddevice` fixed the recurring per-note artifact, but real
+      playback still wasn't clean — the final piece was a genuine,
+      quantified throughput deficit in `run_c64.py`'s own loop, not
+      `Sid`/`AudioOutput`.** Every earlier diagnostic in the audio
+      investigation had (unnoticed) never included real screen
+      rendering — caught only because the user's real-emulator
+      experience ("all notes still noisy") didn't match a capture that
+      recovered after ~1.2s. Adding `Screen.draw()`/`render_frame()`
+      back in reproduced it exactly: `buffered_seconds()` stayed pinned
+      near zero for 8+ real seconds whenever the screen drew every
+      frame — not a warm-up window, a permanent deficit. Measured
+      directly: `machine.step()` ~12.3ms + `render_frame()` ~3.7ms +
+      `Screen.draw()` ~8.2ms ≈ **24.2ms against a 19.95ms budget**, over
+      by itself before any margin. Fixed by throttling actual drawing to
+      1-in-5 frames (`VIDEO_DRAW_EVERY_WITH_AUDIO`) while still stepping
+      CPU/SID/audio every frame — verified with a real, growing buffer
+      margin and a clean full-length capture (doubled note lengths too,
+      to rule out a coincidental timing match). Real, disclosed trade:
+      video refreshes at ~10Hz instead of ~50Hz while audio's on;
+      without audio this problem doesn't exist and full-rate drawing is
+      unaffected. User-confirmed on real hardware: "a little crackling
+      on occasion, but I think we are good" — the residual is understood
+      (PyPy JIT warm-up on the very first note) and small, nothing like
+      the severe, recurring artifact this investigation started with.
 - Next up: storage (Phase 11)
 
 ## Reference documentation
@@ -311,8 +459,10 @@ vendored — pull specific facts as needed):
 The emulation core (`src/c64/`, `src/c6502/`) has no compiled/native or
 runtime dependencies at all -- that's still true. `src/peripherals/`
 (real screen/keyboard/audio/disk I/O, Phase 8 onward) is the one
-exception: it needs this project's `peripherals` extra (currently
-pygame). Its tests (`tests/peripherals/`) are gated behind
+exception: it needs this project's `peripherals` extra (`pygame` for
+screen/keyboard, `sounddevice` for audio -- see `src/peripherals/
+audio.py`'s module docstring for why audio specifically isn't pygame).
+Its tests (`tests/peripherals/`) are gated behind
 `pytest.importorskip(...)`, so the base suite still passes with nothing
 but `pytest` installed. `pyproject.toml` sets `pythonpath = ["src"]` so
 `pytest` finds the packages directly from source; `pip install -e
@@ -325,3 +475,9 @@ pytest                            # fast suite
 scripts/fetch_dormann_tests.sh    # one-time per machine
 pytest -m slow                    # re-validates the ported CPU core
 ```
+
+**PyPy works and is meaningfully faster — see `docs/machine.md`'s
+Performance section for real numbers (6.7x-8.8x across several real
+benchmarks, `pygame` included).** No code changes needed, same
+`pytest`/`pip install -e` workflow as above, just with `pypy3` in place
+of `python3`. Recommended for any `enable_audio=True` run.

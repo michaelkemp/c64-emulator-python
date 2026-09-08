@@ -203,6 +203,23 @@ loses to a sprite, regardless of this bit) -- it has no effect on
 sprite-vs-sprite ordering, which is always by sprite number (0 highest,
 7 lowest, matching real hardware).
 
+**The border always wins over sprites.** Verified against Christian
+Bauer's article (section 3.8.2's priority diagram): "Screen border" sits
+at the *highest*-priority position, above every sprite, in both `MxDP`
+configurations -- sprites are clipped to the interior 320x200 display
+area, never drawn into the border, matching real hardware's default
+behavior. This is exactly why "sprites in the border" is a well-known,
+sought-after *demo trick* rather than something that happens for free:
+defeating this masking on real hardware needs precise raster-timing
+manipulation (the same DEN-latched-at-line-`$30` mechanism `is_badline`
+already models the condition for, combined with cycle-exact timing this
+project doesn't implement -- see "Known gaps"), not just positioning a
+sprite past the edge. An earlier version of this code clipped sprites to
+the full frame (border included) instead of the interior area, letting
+them render on top of the border in the default case where real hardware
+wouldn't -- caught from a real screenshot, not written correctly the
+first time.
+
 ## Collision detection (`$D01E`/`$D01F`)
 
 Different clearing rule from `$D019` above, easy to mix up: reading
