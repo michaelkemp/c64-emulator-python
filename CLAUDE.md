@@ -135,6 +135,10 @@ docs/
                         # incl. IRQ/NMI delivery (Phase 7)
   cartridge.md           # .crt format, verified memory-map interaction,
                         # known gaps (Phase 11, generic/type-0 only)
+  vice-gap-analysis.md   # full comparison of this project vs. VICE's real
+                        # source, chip by chip -- what's already a
+                        # documented/deliberate gap vs. genuinely new,
+                        # and which are worth fixing
 scripts/
   fetch_dormann_tests.sh # fetches the GPLv3 Klaus Dormann suite, not vendored
   stage_roms.sh          # stages the user's own local C64 ROMs into
@@ -492,7 +496,30 @@ Summary:
       code too — `AudioOutput`/`Sid` don't care who writes SID registers;
       Galaxian's own writes (master volume, voice setup) were captured
       directly, confirming the existing pipeline just works.
-- Next up: disk (rest of Phase 11), or real per-scanline VIC-II rendering
+- [x] **Full gap analysis against VICE's real source, chip by chip** --
+      requested to understand exactly where this project diverges from a
+      mature reference emulator before deciding what's worth fixing.
+      Fetched VICE's actual source (not a summary) for the CPU core,
+      CIA 6526, memory/PLA, cartridge breadth, VIC-II, and SID/reSID.
+      **Result: nearly everything found was already documented** as a
+      deliberate, known gap in this project's own per-chip docs -- direct
+      payoff of the "document gaps as you find them" convention. Two
+      genuinely new/actionable items surfaced: (1) hitting an unimplemented
+      illegal 6502 opcode currently crashes the whole process rather than
+      degrading gracefully; (2) SID "digi-playback" (volume-register
+      sample-through trick some real music uses) is untested either way.
+      Also added precision to two existing docs from reading real reSID
+      source directly: `sid.md`'s ADSR rate-table hedge was removed (now
+      confirmed to match reSID's own source exactly, not just "plausible"),
+      and the combined-waveform/filter gaps were confirmed to require
+      vendoring reSID's own data/logic under a license this project has
+      deliberately declined to take on, not just a better algorithm. See
+      `docs/vice-gap-analysis.md` for the full per-chip breakdown and the
+      two-item actionable list -- nothing fixed yet, this was a
+      documentation pass only, matching what was asked for.
+- Next up: disk (rest of Phase 11), real per-scanline VIC-II rendering, or
+  one of the two small items `docs/vice-gap-analysis.md` flagged as
+  actionable (illegal-opcode crash behavior, SID digi-playback test)
 
 ## Reference documentation
 

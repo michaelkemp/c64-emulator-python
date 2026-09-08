@@ -141,11 +141,13 @@ phase.
 
 **Approximation**: real decay/release isn't linear -- the chip slows the
 step rate as the level drops, approximating an exponential curve, using
-an widely-published (though not independently re-verified against a
-physical chip in this session) zone table: divide the nominal rate
-period by the envelope level's zone -- `255`-`93`: ×1, `92`-`54`: ×2,
-`53`-`26`: ×4, `25`-`14`: ×8, `13`-`6`: ×16, `5`-`0`: ×30. Attack has no
-such zone table (it's linear).
+a zone table: divide the nominal rate period by the envelope level's
+zone -- `255`-`93`: ×1, `92`-`54`: ×2, `53`-`26`: ×4, `25`-`14`: ×8,
+`13`-`6`: ×16, `5`-`0`: ×30. Attack has no such zone table (it's linear).
+**Verified directly against reSID's own source** (`envelope.h`'s zone
+boundaries `255, 93, 54, 26, 14, 6` and periods `1, 2, 4, 8, 16, 30`) as
+part of the September 2026 VICE gap-analysis pass (`docs/vice-gap-analysis.md`)
+-- this matches exactly, not just plausibly.
 
 ## Filter: a simple digital state-variable filter, not reSID's transistor model
 
@@ -174,6 +176,18 @@ approximation (no two real chips agree closely enough to make a single
 - **No paddle input** (`$19`/`$1A` just read `$FF`) and no external audio
   input to the filter (`$17` bit 3 is stored but does nothing) -- neither
   exists in this project.
+- **"Digi-playback" (4-bit sample-through-volume-register) support is
+  untested and unverified either way.** A real, well-known technique:
+  some C64 music/SFX routines rewrite `$D418`'s low nibble (master
+  volume) rapidly to ride the SID's residual DC bias as crude PCM. This
+  project's `output_sample()` reads `MODE_VOLUME` once per output sample
+  (~22.6 emulated cycles at 44.1kHz), and register writes only ever
+  happen at `Machine.step()` instruction granularity -- nothing here was
+  built with or against this trick in mind, so whether it'd sound right
+  is genuinely unknown, not confirmed-working and not confirmed-broken.
+  Real-world impact is real but niche (a specific subset of loader
+  jingles/digi-tunes, not ordinary gameplay audio) -- see
+  `docs/vice-gap-analysis.md`.
 - **Nothing plays real audio yet.** `Sid.tick(cycles)` advances oscillator
   and envelope state exactly like `CIA6526.tick`/`VicII.tick`, and
   `output_sample()` reads the current instantaneous mixed/filtered level
