@@ -46,10 +46,17 @@ answer for this exact question, only real emulator source settled it):
 Which reduces to: ROML needs EXROM inactive (0) *and* LORAM *and* HIRAM
 (unlike ROMH, LORAM matters here -- confirmed directly from VICE's
 `c64meminit_roml_config`, not assumed); ROMH (16K mode only, GAME and
-EXROM both 0) needs only HIRAM, independent of LORAM. Ultimax mode
-(GAME=0, EXROM=1 -- ROMH forced into $E000-$FFFF instead, most RAM
-disabled) isn't modeled; `Cartridge.from_file` refuses to load one
-rather than silently getting it wrong.
+EXROM both 0) needs only HIRAM, independent of LORAM.
+
+**Ultimax mode** (GAME=0, EXROM=1) is a fourth, separate case -- LORAM/
+HIRAM/CHAREN stop mattering entirely once it's active (`Bus.
+cart_ultimax`), overriding all of the above. See `_read_ultimax`/
+`_write_ultimax` for the real, verified-against-VICE-source memory map
+(ROML at $8000, ROMH forced into $E000-$FFFF replacing the KERNAL, most
+RAM disabled) and the genuinely surprising write-side behavior (writes
+to $8000-$9FFF/$E000-$FFFF are true no-ops in this mode, not writes to
+underlying RAM -- verified from VICE's actual `roml_store`/`romh_store`,
+not assumed by symmetry with the non-Ultimax case).
 
 The VIC-II, SID, and the two CIAs don't exist yet (Phases 3/4/6 in
 docs/roadmap.md) -- their register windows are wired up as optional
@@ -91,6 +98,7 @@ CART_ROML_START = 0x8000
 CART_ROML_SIZE = 0x2000
 CART_ROMH_START = 0xA000
 CART_ROMH_SIZE = 0x2000
+ULTIMAX_ROMH_START = 0xE000  # ROMH maps here instead of $A000 in Ultimax mode
 
 IO_START = 0xD000
 IO_END = 0xDFFF
@@ -142,6 +150,10 @@ class Bus:
         self.cart_game = cartridge.game if cartridge is not None else 1
         self.cart_rom_lo = cartridge.rom_lo if cartridge is not None else None
         self.cart_rom_hi = cartridge.rom_hi if cartridge is not None else None
+        # Ultimax mode (EXROM=1, GAME=0) overrides LORAM/HIRAM/CHAREN
+        # entirely -- see _read_ultimax/_write_ultimax and this module's
+        # docstring.
+        self.cart_ultimax = self.cart_exrom == 1 and self.cart_game == 0
         self.vic = vic
         self.sid = sid
         self.cia1 = cia1
@@ -156,6 +168,8 @@ class Bus:
             return self.port.read_ddr()
         if address == 0x0001:
             return self.port.read_data()
+        if self.cart_ultimax:
+            return self._read_ultimax(address)
         if (
             CART_ROML_START <= address < CART_ROML_START + CART_ROML_SIZE
             and self.cart_exrom == 0
@@ -197,6 +211,9 @@ class Bus:
             return
         if address == 0x0001:
             self.port.write_data(value)
+            return
+        if self.cart_ultimax:
+            self._write_ultimax(address, value)
             return
         if IO_START <= address <= IO_END and self.port.charen:
             self._write_io_window(address, value)
@@ -244,6 +261,13 @@ class Bus:
             if self.char_rom is not None:
                 return self.char_rom[address - CHAR_ROM_START]
             return self._ram[address]
+        return self._read_io_chips(address)
+
+    def _read_io_chips(self, address: int) -> int:
+        """The actual VIC-II/SID/color-RAM/CIA dispatch for $D000-$DFFF --
+        factored out of `_read_io_window` so Ultimax mode (where this
+        window is *always* active, CHAREN or not -- see `_read_ultimax`)
+        can reach it directly without that leading CHAREN check."""
         if VIC_START <= address <= VIC_END:
             return _read_chip(self.vic, address - VIC_START, VIC_WINDOW)
         if SID_START <= address <= SID_END:
@@ -268,6 +292,63 @@ class Bus:
         elif CIA2_START <= address <= CIA2_END:
             _write_chip(self.cia2, address - CIA2_START, CIA_WINDOW, value)
         # else: cartridge I/O1/I/O2 -- no cartridge support, write ignored
+
+    def _read_ultimax(self, address: int) -> int:
+        """Ultimax mode (EXROM=1, GAME=0): LORAM/HIRAM/CHAREN stop
+        mattering entirely -- verified directly against VICE's own
+        c64meminit.c (memory configs 16-23 all show the same layout
+        regardless of those three bits) and c64cartmem.c (for the
+        generic/type-0 case this project supports, not any of VICE's
+        bank-switching-hardware-specific carts). See docs/cartridge.md.
+
+        $0000-$0FFF is ordinary RAM. $1000-$7FFF and $A000-$CFFF have no
+        RAM chip-select in this mode at all -- real hardware's PLA
+        disconnects it (the "only 4K available" limitation Ultimax
+        software documents); real hardware reflects whatever the VIC-II
+        itself last read over the shared bus there (`vicii_read_phi1` in
+        VICE), which this project doesn't model (no consumer needs that
+        precision yet) -- simplified to a fixed open-bus value, same
+        convention already used for the unimplemented cartridge I/O1/I/O2
+        registers below. $8000-$9FFF is ROML (if present). $D000-$DFFF is
+        always I/O, unconditionally -- CHAREN has no effect in this mode.
+        $E000-$FFFF is ROMH, replacing the KERNAL entirely (including the
+        reset/IRQ/NMI vectors)."""
+        if address < 0x1000:
+            return self._ram[address]
+        if address <= 0x7FFF:
+            return 0xFF  # open bus -- no RAM chip-select here in this mode
+        if address <= 0x9FFF:
+            if self.cart_rom_lo is not None:
+                return self.cart_rom_lo[address - CART_ROML_START]
+            return 0xFF  # no ROML chip present -- open bus
+        if address <= 0xCFFF:
+            return 0xFF  # open bus -- same as $1000-$7FFF
+        if address <= 0xDFFF:
+            return self._read_io_chips(address)
+        if self.cart_rom_hi is not None:
+            return self.cart_rom_hi[address - ULTIMAX_ROMH_START]
+        return 0xFF  # no ROMH chip present -- open bus
+
+    def _write_ultimax(self, address: int, value: int) -> None:
+        """The write side of Ultimax mode -- a real surprise verified
+        directly against VICE's `roml_store`/`romh_store` source (not
+        assumed by symmetry with reads): for a generic/type-0 cartridge,
+        writes to $8000-$9FFF and $E000-$FFFF are genuine no-ops in this
+        mode, *not* writes to the RAM underneath the way non-Ultimax
+        ROM-overlaid regions already work elsewhere in this file. Real
+        hardware's PLA doesn't assert a RAM write-select for either
+        range in Ultimax mode, cartridge ROM present or not. Only
+        $0000-$0FFF (ordinary RAM) and $D000-$DFFF (I/O, unconditionally)
+        accept writes at all."""
+        if address < 0x1000:
+            self._ram[address] = value
+            return
+        if address <= 0xCFFF:
+            return  # true no-op: no RAM write-select in this mode
+        if address <= 0xDFFF:
+            self._write_io_window(address, value)  # already CHAREN-unconditional -- see its own body
+            return
+        # $E000-$FFFF: also a true no-op -- see docstring above
 
 
 def _check_rom_size(name: str, rom: bytes | None, expected_size: int) -> None:

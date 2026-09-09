@@ -277,3 +277,95 @@ def test_read16_write16_and_load_match_flat_memory_semantics(bus):
 
     bus.load(0x0800, bytes([1, 2, 3]))
     assert [bus.read8(0x0800 + i) for i in range(3)] == [1, 2, 3]
+
+
+# --- Ultimax mode (EXROM=1, GAME=0) -- see Bus._read_ultimax/_write_ultimax ---
+# for the real memory map, verified directly against VICE's c64meminit.c /
+# c64cartmem.c source rather than assumed by symmetry with the non-Ultimax
+# case.
+
+def make_ultimax_cartridge(*, rom_lo=None, rom_hi=None):
+    return make_cartridge(exrom=1, game=0, rom_lo=rom_lo, rom_hi=rom_hi)
+
+
+def test_ultimax_flag_set_from_exrom_and_game():
+    assert Bus(cartridge=make_ultimax_cartridge()).cart_ultimax is True
+    assert Bus(cartridge=make_cartridge(exrom=0, game=1)).cart_ultimax is False
+    assert Bus().cart_ultimax is False  # no cartridge -- EXROM=1/GAME=1, not Ultimax
+
+
+def test_ultimax_zero_page_through_0fff_is_ordinary_ram():
+    bus = Bus(cartridge=make_ultimax_cartridge())
+    bus.write8(0x0002, 0x42)  # zero page (not the $00/$01 CPU port itself)
+    bus.write8(0x0FFF, 0x99)
+    assert bus.read8(0x0002) == 0x42
+    assert bus.read8(0x0FFF) == 0x99
+
+
+def test_ultimax_1000_7fff_and_a000_cfff_are_open_bus():
+    bus = Bus(cartridge=make_ultimax_cartridge())
+    for addr in (0x1000, 0x4000, 0x7FFF, 0xA000, 0xC000, 0xCFFF):
+        assert bus.read8(addr) == 0xFF, hex(addr)
+
+
+def test_ultimax_writes_to_1000_7fff_and_a000_cfff_have_no_effect():
+    """Real hardware has no RAM write-select in this range in Ultimax
+    mode -- writes are true no-ops, not lost-but-later-visible."""
+    bus = Bus(cartridge=make_ultimax_cartridge())
+    for addr in (0x1000, 0x4000, 0x7FFF, 0xA000, 0xC000, 0xCFFF):
+        bus.write8(addr, 0x77)
+        assert bus.read8(addr) == 0xFF, hex(addr)
+
+
+def test_ultimax_roml_at_8000_reads_from_cartridge():
+    cart = make_ultimax_cartridge(rom_lo=make_rom(0x2000, 0x11))
+    bus = Bus(cartridge=cart)
+    assert bus.read8(0x8000) == 0x11
+    assert bus.read8(0x9FFF) == 0x11
+
+
+def test_ultimax_8000_9fff_open_bus_without_a_roml_chip():
+    bus = Bus(cartridge=make_ultimax_cartridge())  # no rom_lo at all
+    assert bus.read8(0x8000) == 0xFF
+
+
+def test_ultimax_write_to_8000_9fff_never_reaches_ram_even_with_roml_present():
+    """The real surprise: verified against VICE's own roml_store -- for a
+    generic cartridge in Ultimax mode, $8000-$9FFF writes are a genuine
+    no-op, unlike the non-Ultimax case where ROM-overlaid writes land in
+    the RAM underneath."""
+    cart = make_ultimax_cartridge(rom_lo=make_rom(0x2000, 0x11))
+    bus = Bus(cartridge=cart)
+    bus.write8(0x8000, 0x77)
+    assert bus.read8(0x8000) == 0x11  # unchanged -- still the cartridge ROM
+
+
+def test_ultimax_romh_at_e000_replaces_kernal():
+    cart = make_ultimax_cartridge(rom_hi=make_rom(0x2000, 0x22))
+    bus = Bus(kernal_rom=make_rom(0x2000, 0xB0), cartridge=cart)
+    assert bus.read8(0xE000) == 0x22
+    assert bus.read8(0xFFFF) == 0x22  # including the reset/IRQ/NMI vector bytes
+
+
+def test_ultimax_e000_ffff_open_bus_without_a_romh_chip():
+    bus = Bus(kernal_rom=make_rom(0x2000, 0xB0), cartridge=make_ultimax_cartridge())
+    assert bus.read8(0xE000) == 0xFF  # not the KERNAL -- Ultimax mode hides it entirely
+
+
+def test_ultimax_write_to_e000_ffff_never_reaches_ram():
+    cart = make_ultimax_cartridge(rom_hi=make_rom(0x2000, 0x22))
+    bus = Bus(cartridge=cart)
+    bus.write8(0xE000, 0x77)
+    assert bus.read8(0xE000) == 0x22  # unchanged
+
+
+def test_ultimax_d000_dfff_is_always_io_regardless_of_charen():
+    """Unlike the non-Ultimax case, CHAREN has no effect at all on
+    $D000-$DFFF once Ultimax mode is active -- verified against VICE's
+    own memory-config table (all Ultimax rows show "io" unconditionally)."""
+    bus = Bus(char_rom=make_rom(0x1000, 0xAA), cartridge=make_ultimax_cartridge())
+    bus.write8(0x0000, 0xFF)
+    bus.write8(0x0001, 0b1111_1011)  # CHAREN=0 -- would normally show char ROM
+    bus.write8(0xD800, 0x03)  # color RAM
+    assert bus.read8(0xD800) & 0x0F == 0x03  # I/O (color RAM), not char ROM's 0xAA
+

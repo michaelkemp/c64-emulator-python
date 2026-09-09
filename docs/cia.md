@@ -119,11 +119,30 @@ CRB's ALARM bit (bit 7) redirects writes to `$8`-`$B` into a separate
 alarm register instead of the clock; when the (unlatched) clock equals
 the alarm, ICR's TOD-alarm flag sets once.
 
-**Known gap**: nothing yet drives real elapsed time into this clock --
-`CIA6526`/`TodClock` expose a `tick_tenth()` method to advance it by one
-tenth of a second, but no cycle-accurate scheduler calls it yet (that
-needs a real system-clock-driven main loop, which doesn't exist until
-something assembles `Bus` + `CPU` + the chips into a running machine).
+**Fixed** (was "known gap: nothing drives real elapsed time into this
+clock"). `CIA6526.tick(cycles)` -- the same real-elapsed-PHI2-cycles call
+`Machine.step()` already makes every step for the timers -- now also
+advances TOD: it accumulates `cycles * 10` (units of a tenth of a PHI2
+cycle) and calls `tick_tenth_second()` once the accumulator reaches
+`PAL_CLOCK_HZ`. Tracked as an all-integer tenths-of-a-cycle count rather
+than a fractional cycles-per-tenth float deliberately -- `PAL_CLOCK_HZ`
+(985248) isn't evenly divisible by 10, so a naive float accumulator
+subtracting 98524.8 repeatedly drifts short by a hair at exact-second
+boundaries (caught by a test asserting an exact boundary, not just
+approximately-right timing). CRA bit 7 (`TodClock.rate_50hz`, the real
+50Hz-vs-60Hz mains-divisor select) is still stored/read back correctly
+for software that checks it, but doesn't change tick timing here -- there's
+no real external TOD pin/mains signal in this project to apply it to, so
+ticking directly off the known-exact system clock rate is more accurate
+to real wall-time than modeling a synthetic mains-derived divider chain
+would be. Verified against the real KERNAL via `Machine`: both CIA1 and
+CIA2's independent TOD clocks advance correctly over real elapsed cycles.
+Real-world impact was real but rare (software reading TOD for actual
+wall-time, not most games/demos). Not to be confused with the *jiffy
+clock* (`$A0`-`$A2`, a KERNAL software counter incremented by its own IRQ
+handler on CIA1 Timer A underflow) -- a different mechanism from this TOD
+register file entirely, and the thing that was already verified
+incrementing back in Phase 7 (see `CLAUDE.md`).
 
 ## Interrupt Control Register (ICR, `$D`)
 
@@ -140,12 +159,16 @@ Five event sources, each a bit: 0=Timer A underflow, 1=Timer B underflow,
   into the mask", 0 means "clear every bit that's 1 in this write from
   the mask".
 
-**Known gap**: bit 4 (FLAG pin) never sets -- the FLAG pin isn't modeled
-(nothing drives it: no cassette, no user-port device). `CIA6526.irq_line`
-reflects the chip's own IRQ output correctly, but nothing wires it to the
-CPU's actual IRQ/NMI input yet -- that's part of "assemble everything into
-a running machine", not yet built (see the TOD gap above; same missing
-piece).
+**Known gap, still open**: bit 4 (FLAG pin) never sets -- the FLAG pin
+isn't modeled (nothing drives it: no cassette, no user-port device).
+
+**Fixed since this was written**: `CIA6526.irq_line` reflects the chip's
+own IRQ output correctly, *and* `Machine.step()` (`docs/machine.md`,
+Phase 7) now wires it to the CPU's actual IRQ pin (`cia1.irq_line or vic.
+irq_line` delivers `cpu.irq()`) and CIA2's to NMI (edge-triggered). A
+distinct fix from the TOD one above (that's about driving TOD's own
+*internal* clock forward; this is about the chip's IRQ *output* reaching
+the CPU at all) -- both are now resolved, just at different times.
 
 ## Serial Data Register (SDR, `$C`)
 
@@ -169,6 +192,12 @@ direction, matching real hardware's symmetric wiring. `Joystick`
 (`joystick.py`) models a single digital joystick's up/down/left/right/fire
 switches, active low, on whichever port it's plugged into. `Cia1Ports`
 composes both into the single `port_coupler` `CIA6526` expects.
+
+Real input reaches `Joystick` via `peripherals/joystick_input.py`
+(`JoystickInput`) -- the numeric keypad drives *one* port at a time
+(defaulting to port 2, the real-world convention for single-joystick
+software), switchable at runtime with F2, since this project has no
+real second physical input device to dedicate to each port.
 
 **Resolved (Phase 9), empirically, not from either disputed source**: two
 well-regarded community references disagreed with each other on the exact

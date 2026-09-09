@@ -1,9 +1,16 @@
 """Opcode dispatch table for the NMOS 6502.
 
-Pure data + wiring: OPCODES maps each legal opcode byte to an OpcodeSpec
-naming its mnemonic, addressing mode, the addressing/instruction functions
-that implement it, and its cycle count. Undocumented/"illegal" opcodes are
-deliberately absent -- see cpu.py's IllegalOpcodeError.
+Pure data + wiring: OPCODES maps each opcode byte to an OpcodeSpec naming
+its mnemonic, addressing mode, the addressing/instruction functions that
+implement it, and its cycle count.
+
+Most of the 105 undocumented/"illegal" opcode values are now implemented
+(marked illegal=True below) -- see docs/6502-reference.md for why the
+original "deliberately absent" decision was revisited, which of the four
+behavior groups are covered, and citations for their semantics. The
+remaining 8 (the chip-unstable ones: ANE/XAA, LXA, LAS, SHA, SHX, SHY,
+TAS) are still genuinely absent and fall through to cpu.py's
+IllegalOpcodeError.
 
 Cycle counts and the addressing-mode matrix per instruction are cross-
 checked against https://masswerk.at/6502/6502_instruction_set.html (see
@@ -27,6 +34,7 @@ class OpcodeSpec:
     instruction_fn: Callable
     base_cycles: int
     extra_on_page_cross: bool = False
+    illegal: bool = False
 
 
 OPCODES: Dict[int, OpcodeSpec] = {}
@@ -40,11 +48,13 @@ def _add(
     instruction_fn: Callable,
     base_cycles: int,
     extra_on_page_cross: bool = False,
+    illegal: bool = False,
 ) -> None:
     if opcode in OPCODES:
         raise ValueError(f"duplicate opcode ${opcode:02X}")
     OPCODES[opcode] = OpcodeSpec(
-        mnemonic, mode, addressing_fn, instruction_fn, base_cycles, extra_on_page_cross
+        mnemonic, mode, addressing_fn, instruction_fn, base_cycles,
+        extra_on_page_cross, illegal
     )
 
 
@@ -251,3 +261,133 @@ _add(0xEA, "NOP", "impl", am.implied, instr.nop, 2)
 
 _add(0x00, "BRK", "impl", am.implied, instr.brk, 7)
 _add(0x40, "RTI", "impl", am.implied, instr.rti, 6)
+
+# --- illegal/undocumented opcodes -----------------------------------------
+# See docs/6502-reference.md's "Illegal/undocumented opcodes" section for
+# citations and the reasoning behind implementing this subset.
+
+# LAX: LDA+LDX combined (loads the same value into both A and X).
+_add(0xA7, "LAX", "zp", am.zero_page, instr.lax, 3, illegal=True)
+_add(0xB7, "LAX", "zpy", am.zero_page_y, instr.lax, 4, illegal=True)
+_add(0xAF, "LAX", "abs", am.absolute, instr.lax, 4, illegal=True)
+_add(0xBF, "LAX", "absy", am.absolute_y, instr.lax, 4, extra_on_page_cross=True, illegal=True)
+_add(0xA3, "LAX", "indx", am.indexed_indirect, instr.lax, 6, illegal=True)
+_add(0xB3, "LAX", "indy", am.indirect_indexed, instr.lax, 5, extra_on_page_cross=True, illegal=True)
+
+# SAX: stores A AND X (flags untouched).
+_add(0x87, "SAX", "zp", am.zero_page, instr.sax, 3, illegal=True)
+_add(0x97, "SAX", "zpy", am.zero_page_y, instr.sax, 4, illegal=True)
+_add(0x8F, "SAX", "abs", am.absolute, instr.sax, 4, illegal=True)
+_add(0x83, "SAX", "indx", am.indexed_indirect, instr.sax, 6, illegal=True)
+
+# DCP: DEC memory, then CMP A against the result (always "worst case" cycles).
+_add(0xC7, "DCP", "zp", am.zero_page, instr.dcp, 5, illegal=True)
+_add(0xD7, "DCP", "zpx", am.zero_page_x, instr.dcp, 6, illegal=True)
+_add(0xCF, "DCP", "abs", am.absolute, instr.dcp, 6, illegal=True)
+_add(0xDF, "DCP", "absx", am.absolute_x, instr.dcp, 7, illegal=True)
+_add(0xDB, "DCP", "absy", am.absolute_y, instr.dcp, 7, illegal=True)
+_add(0xC3, "DCP", "indx", am.indexed_indirect, instr.dcp, 8, illegal=True)
+_add(0xD3, "DCP", "indy", am.indirect_indexed, instr.dcp, 8, illegal=True)
+
+# ISC/ISB: INC memory, then SBC A against the result.
+_add(0xE7, "ISC", "zp", am.zero_page, instr.isc, 5, illegal=True)
+_add(0xF7, "ISC", "zpx", am.zero_page_x, instr.isc, 6, illegal=True)
+_add(0xEF, "ISC", "abs", am.absolute, instr.isc, 6, illegal=True)
+_add(0xFF, "ISC", "absx", am.absolute_x, instr.isc, 7, illegal=True)
+_add(0xFB, "ISC", "absy", am.absolute_y, instr.isc, 7, illegal=True)
+_add(0xE3, "ISC", "indx", am.indexed_indirect, instr.isc, 8, illegal=True)
+_add(0xF3, "ISC", "indy", am.indirect_indexed, instr.isc, 8, illegal=True)
+
+# SLO/ASO: ASL memory, then ORA A with the result.
+_add(0x07, "SLO", "zp", am.zero_page, instr.slo, 5, illegal=True)
+_add(0x17, "SLO", "zpx", am.zero_page_x, instr.slo, 6, illegal=True)
+_add(0x0F, "SLO", "abs", am.absolute, instr.slo, 6, illegal=True)
+_add(0x1F, "SLO", "absx", am.absolute_x, instr.slo, 7, illegal=True)
+_add(0x1B, "SLO", "absy", am.absolute_y, instr.slo, 7, illegal=True)
+_add(0x03, "SLO", "indx", am.indexed_indirect, instr.slo, 8, illegal=True)
+_add(0x13, "SLO", "indy", am.indirect_indexed, instr.slo, 8, illegal=True)
+
+# RLA: ROL memory, then AND A with the result.
+_add(0x27, "RLA", "zp", am.zero_page, instr.rla, 5, illegal=True)
+_add(0x37, "RLA", "zpx", am.zero_page_x, instr.rla, 6, illegal=True)
+_add(0x2F, "RLA", "abs", am.absolute, instr.rla, 6, illegal=True)
+_add(0x3F, "RLA", "absx", am.absolute_x, instr.rla, 7, illegal=True)
+_add(0x3B, "RLA", "absy", am.absolute_y, instr.rla, 7, illegal=True)
+_add(0x23, "RLA", "indx", am.indexed_indirect, instr.rla, 8, illegal=True)
+_add(0x33, "RLA", "indy", am.indirect_indexed, instr.rla, 8, illegal=True)
+
+# SRE/LSE: LSR memory, then EOR A with the result.
+_add(0x47, "SRE", "zp", am.zero_page, instr.sre, 5, illegal=True)
+_add(0x57, "SRE", "zpx", am.zero_page_x, instr.sre, 6, illegal=True)
+_add(0x4F, "SRE", "abs", am.absolute, instr.sre, 6, illegal=True)
+_add(0x5F, "SRE", "absx", am.absolute_x, instr.sre, 7, illegal=True)
+_add(0x5B, "SRE", "absy", am.absolute_y, instr.sre, 7, illegal=True)
+_add(0x43, "SRE", "indx", am.indexed_indirect, instr.sre, 8, illegal=True)
+_add(0x53, "SRE", "indy", am.indirect_indexed, instr.sre, 8, illegal=True)
+
+# RRA: ROR memory, then ADC A with the result (chains the new carry out of
+# the ROR into the ADC's carry-in, same as real hardware -- see instr.rra).
+_add(0x67, "RRA", "zp", am.zero_page, instr.rra, 5, illegal=True)
+_add(0x77, "RRA", "zpx", am.zero_page_x, instr.rra, 6, illegal=True)
+_add(0x6F, "RRA", "abs", am.absolute, instr.rra, 6, illegal=True)
+_add(0x7F, "RRA", "absx", am.absolute_x, instr.rra, 7, illegal=True)
+_add(0x7B, "RRA", "absy", am.absolute_y, instr.rra, 7, illegal=True)
+_add(0x63, "RRA", "indx", am.indexed_indirect, instr.rra, 8, illegal=True)
+_add(0x73, "RRA", "indy", am.indirect_indexed, instr.rra, 8, illegal=True)
+
+# ANC, ALR/ASR, ARR, SBX/AXS: immediate-only, each a small AND/shift/compare
+# combo -- see instructions.py for the exact flag semantics.
+_add(0x0B, "ANC", "imm", am.immediate, instr.anc, 2, illegal=True)
+_add(0x2B, "ANC", "imm", am.immediate, instr.anc, 2, illegal=True)
+_add(0x4B, "ALR", "imm", am.immediate, instr.alr, 2, illegal=True)
+_add(0x6B, "ARR", "imm", am.immediate, instr.arr, 2, illegal=True)
+_add(0xCB, "SBX", "imm", am.immediate, instr.sbx, 2, illegal=True)
+
+# USBC: exact duplicate of the legal SBC -- same opcode semantics, just a
+# second encoding for it.
+_add(0xEB, "SBC", "imm", am.immediate, instr.sbc, 2, illegal=True)
+
+# NOP variants: all discard their operand and behave exactly like the legal
+# NOP -- only the addressing mode/operand size/cycle count differs, so they
+# reuse instr.nop directly.
+_add(0x1A, "NOP", "impl", am.implied, instr.nop, 2, illegal=True)
+_add(0x3A, "NOP", "impl", am.implied, instr.nop, 2, illegal=True)
+_add(0x5A, "NOP", "impl", am.implied, instr.nop, 2, illegal=True)
+_add(0x7A, "NOP", "impl", am.implied, instr.nop, 2, illegal=True)
+_add(0xDA, "NOP", "impl", am.implied, instr.nop, 2, illegal=True)
+_add(0xFA, "NOP", "impl", am.implied, instr.nop, 2, illegal=True)
+
+_add(0x80, "NOP", "imm", am.immediate, instr.nop, 2, illegal=True)
+_add(0x82, "NOP", "imm", am.immediate, instr.nop, 2, illegal=True)
+_add(0x89, "NOP", "imm", am.immediate, instr.nop, 2, illegal=True)
+_add(0xC2, "NOP", "imm", am.immediate, instr.nop, 2, illegal=True)
+_add(0xE2, "NOP", "imm", am.immediate, instr.nop, 2, illegal=True)
+
+_add(0x04, "NOP", "zp", am.zero_page, instr.nop, 3, illegal=True)
+_add(0x44, "NOP", "zp", am.zero_page, instr.nop, 3, illegal=True)
+_add(0x64, "NOP", "zp", am.zero_page, instr.nop, 3, illegal=True)
+
+_add(0x14, "NOP", "zpx", am.zero_page_x, instr.nop, 4, illegal=True)
+_add(0x34, "NOP", "zpx", am.zero_page_x, instr.nop, 4, illegal=True)
+_add(0x54, "NOP", "zpx", am.zero_page_x, instr.nop, 4, illegal=True)
+_add(0x74, "NOP", "zpx", am.zero_page_x, instr.nop, 4, illegal=True)
+_add(0xD4, "NOP", "zpx", am.zero_page_x, instr.nop, 4, illegal=True)
+_add(0xF4, "NOP", "zpx", am.zero_page_x, instr.nop, 4, illegal=True)
+
+_add(0x0C, "NOP", "abs", am.absolute, instr.nop, 4, illegal=True)
+
+_add(0x1C, "NOP", "absx", am.absolute_x, instr.nop, 4, extra_on_page_cross=True, illegal=True)
+_add(0x3C, "NOP", "absx", am.absolute_x, instr.nop, 4, extra_on_page_cross=True, illegal=True)
+_add(0x5C, "NOP", "absx", am.absolute_x, instr.nop, 4, extra_on_page_cross=True, illegal=True)
+_add(0x7C, "NOP", "absx", am.absolute_x, instr.nop, 4, extra_on_page_cross=True, illegal=True)
+_add(0xDC, "NOP", "absx", am.absolute_x, instr.nop, 4, extra_on_page_cross=True, illegal=True)
+_add(0xFC, "NOP", "absx", am.absolute_x, instr.nop, 4, extra_on_page_cross=True, illegal=True)
+
+# JAM/KIL/HLT: these freeze the CPU on real hardware (bus locked, needs a
+# reset) rather than doing anything instruction-shaped -- see instr.jam and
+# cpu.py's ProcessorJammed. base_cycles is nominal (real hardware never
+# retires this as a normal instruction); the instruction_fn raises before
+# it would matter.
+for _jam_opcode in (0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92, 0xB2, 0xD2, 0xF2):
+    _add(_jam_opcode, "JAM", "impl", am.implied, instr.jam, 2, illegal=True)
+del _jam_opcode

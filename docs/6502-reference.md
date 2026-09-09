@@ -65,10 +65,71 @@ buggy on page boundaries on NMOS — must reproduce the bug), Indexed Indirect
   flag behavior for N/V/Z is itself quirky — verify against the dedicated
   `6502_decimal_test` in Klaus Dormann's suite rather than trusting
   intuition.
-- We are **not** implementing the undocumented/"illegal" opcodes initially
-  — the emulator should treat them as an error (loud failure) so bugs are
-  visible rather than silently running as NOPs. Revisit only if a real
-  program we want to run depends on them.
+## Illegal/undocumented opcodes
+
+Originally deliberately unimplemented (treated as a loud `IllegalOpcodeError`
+failure) — revisited once it became clear real C64 software (not just
+synthetic test cases) genuinely depends on them: undocumented opcodes were
+routinely used deliberately in copy-protected commercial games and demoscene
+code, both for code density and as an anti-disassembly/anti-emulation trick
+that assumes a naive tool won't handle them.
+
+Of the 256 possible opcode byte values, 105 are undocumented. They split into
+four groups by how well-defined their real-hardware behavior is; this
+project implements the first three (97 opcodes) and deliberately still does
+not implement the fourth (8 opcodes):
+
+1. **Reliable combined ops (57)** — deterministic fusions of two documented
+   instructions sharing one memory read: `LAX` (LDA+LDX), `SAX` (store
+   A AND X), `DCP` (DEC+CMP), `ISC`/`ISB` (INC+SBC), `SLO` (ASL+ORA), `RLA`
+   (ROL+AND), `SRE` (LSR+EOR), `RRA` (ROR+ADC — the ROR's carry-out feeds the
+   ADC's carry-in, same as real hardware), plus the immediate-only `ANC`,
+   `ALR`/`ASR`, `ARR`, `SBX`/`AXS`. `$EB` (`USBC`) is a plain second encoding
+   of legal `SBC`. **Implemented** in `src/c6502/emulator/instructions.py`.
+   `ARR`'s widely-documented binary-mode C/V-from-bits-6/5 formula is
+   implemented; its additional decimal-mode-dependent flag wrinkle (in the
+   same spirit as `ADC`/`SBC`'s own quirky decimal flags, above) is **not**
+   — a disclosed gap, since decimal-mode `ARR` is vanishingly rare in real
+   C64 software.
+2. **Multi-byte/multi-cycle NOPs (27)** — read-and-discard, at various
+   addressing modes/operand sizes/cycle counts (including page-cross timing
+   identical to their legal counterparts). Behaviorally identical to the
+   legal NOP; **implemented** by reusing `instr.nop` under new opcode-table
+   entries.
+3. **`JAM`/`KIL`/`HLT` (12: `$02,$12,$22,$32,$42,$52,$62,$72,$92,$B2,$D2,$F2`)**
+   — not "does something," a genuine dead end: real hardware locks the CPU
+   in an internal fetch cycle indefinitely, recoverable only by a reset.
+   **Implemented** as a distinct `ProcessorJammed` exception (not folded into
+   `IllegalOpcodeError`, since this is real documented behavior, not
+   something unimplemented) — see `src/c6502/emulator/cpu.py`.
+4. **Chip-unstable ops (8, still unimplemented)** — `ANE`/`XAA` (`$8B`),
+   `LXA` (`$AB`), `LAS`/`LAR` (`$BB`), `SHA`/`AHX` (`$9F`, `$93`), `SHX`
+   (`$9E`), `SHY` (`$9C`), `TAS`/`SHS` (`$9B`). Real chip-to-chip behavior
+   genuinely varies with analog bus conditions/chip series — even the
+   community reverse-engineering references disagree on exact semantics.
+   Still raise `IllegalOpcodeError`; revisit only if a specific real program
+   depends on one and its exact needed behavior can be pinned down.
+
+Sources consulted for exact opcode bytes, addressing modes, cycle counts,
+and flag semantics (read for understanding; nothing vendored, same license
+discipline as `docs/testing-strategy.md`'s SID/reSID rule):
+[masswerk.at's undocumented opcode tables](https://www.masswerk.at/6502/6502_instruction_set.html)
+and
+[masswerk.at's "6502 Illegal Opcodes Demystified"](https://www.masswerk.at/nowgobang/2021/6502-illegal-opcodes).
+
+A verified-license test ROM specific to illegal-opcode correctness (the kind
+of thing Klaus Dormann's suite deliberately doesn't cover — confirmed: its
+own "extended" test in the same repository tests the *65C02's* undefined
+opcodes, a different chip with different undefined-opcode behavior, not
+NMOS/6510) was evaluated and not found: the classic community reference
+(Wolfgang Lorenz's test suite / `AllSuiteA`) is only ever described as
+"believed to be public domain" with no primary source establishing that —
+exactly the kind of unverified claim `docs/testing-strategy.md`'s license
+discipline rule exists to catch (cf. the ROM licensing lesson in the main
+`CLAUDE.md`). Correctness here is instead established the same way the rest
+of this project's own hand-assembled tests are: `tests/emulator/
+test_illegal_opcodes.py` verifies each implemented instruction's semantics
+against hand-computed expected values, not a fetched suite.
 
 ## Status
 

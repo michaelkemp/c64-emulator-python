@@ -181,13 +181,16 @@ def _adc_decimal(cpu: "CPU", value: int) -> int:
     return ((hi & 0x0F) << 4) | lo
 
 
-def adc(cpu: "CPU", address: int) -> int:
-    value = cpu.bus.read8(address)
+def _apply_adc(cpu: "CPU", value: int) -> None:
     if cpu.flags.d:
         result = _adc_decimal(cpu, value)
     else:
         result = _adc_binary(cpu, value)
     cpu.a = result & 0xFF
+
+
+def adc(cpu: "CPU", address: int) -> int:
+    _apply_adc(cpu, cpu.bus.read8(address))
     return 0
 
 
@@ -214,13 +217,16 @@ def _sbc_decimal(cpu: "CPU", value: int) -> int:
     return ((hi & 0x0F) << 4) | (lo & 0x0F)
 
 
-def sbc(cpu: "CPU", address: int) -> int:
-    value = cpu.bus.read8(address)
+def _apply_sbc(cpu: "CPU", value: int) -> None:
     if cpu.flags.d:
         result = _sbc_decimal(cpu, value)
     else:
         result = _adc_binary(cpu, (~value) & 0xFF)
     cpu.a = result & 0xFF
+
+
+def sbc(cpu: "CPU", address: int) -> int:
+    _apply_sbc(cpu, cpu.bus.read8(address))
     return 0
 
 
@@ -317,12 +323,15 @@ def ror(cpu: "CPU", address: Optional[int]) -> int:
 
 # --- compares ------------------------------------------------------------
 
-def _compare(cpu: "CPU", register_value: int, address: int) -> int:
-    value = cpu.bus.read8(address)
+def _compare_value(cpu: "CPU", register_value: int, value: int) -> None:
     diff = (register_value - value) & 0xFF
     cpu.flags.c = register_value >= value
     cpu.flags.z = register_value == value
     cpu.flags.n = bool(diff & 0x80)
+
+
+def _compare(cpu: "CPU", register_value: int, address: int) -> int:
+    _compare_value(cpu, register_value, cpu.bus.read8(address))
     return 0
 
 
@@ -440,3 +449,149 @@ def rti(cpu: "CPU", address: Optional[int]) -> int:
     cpu.flags.unpack(cpu.pull8())
     cpu.pc = cpu.pull16()
     return 0
+
+
+# --- illegal/undocumented opcodes ---------------------------------------
+# See opcodes.py's "illegal/undocumented opcodes" section and
+# docs/6502-reference.md for citations. These are the subset with reliable,
+# deterministic behavior on real NMOS 6502/6510 hardware -- the remaining
+# chip-unstable ones (ANE/XAA, LXA, LAS, SHA, SHX, SHY, TAS) are
+# deliberately not implemented (see cpu.py's IllegalOpcodeError).
+
+def lax(cpu: "CPU", address: int) -> int:
+    """LDA+LDX combined: loads the same value into both A and X."""
+    value = cpu.bus.read8(address)
+    cpu.a = value
+    cpu.x = value
+    cpu.set_zn(value)
+    return 0
+
+
+def sax(cpu: "CPU", address: int) -> int:
+    """Stores A AND X -- unlike the ALU ops below, this touches no flags."""
+    cpu.bus.write8(address, cpu.a & cpu.x)
+    return 0
+
+
+def dcp(cpu: "CPU", address: int) -> int:
+    """DEC memory, then CMP A against the decremented value."""
+    value = (cpu.bus.read8(address) - 1) & 0xFF
+    cpu.bus.write8(address, value)
+    _compare_value(cpu, cpu.a, value)
+    return 0
+
+
+def isc(cpu: "CPU", address: int) -> int:
+    """INC memory, then SBC A against the incremented value."""
+    value = (cpu.bus.read8(address) + 1) & 0xFF
+    cpu.bus.write8(address, value)
+    _apply_sbc(cpu, value)
+    return 0
+
+
+def slo(cpu: "CPU", address: int) -> int:
+    """ASL memory, then ORA A with the shifted value."""
+    value = cpu.bus.read8(address)
+    cpu.flags.c = bool(value & 0x80)
+    result = (value << 1) & 0xFF
+    cpu.bus.write8(address, result)
+    cpu.a |= result
+    cpu.set_zn(cpu.a)
+    return 0
+
+
+def rla(cpu: "CPU", address: int) -> int:
+    """ROL memory, then AND A with the rotated value."""
+    value = cpu.bus.read8(address)
+    carry_in = 1 if cpu.flags.c else 0
+    cpu.flags.c = bool(value & 0x80)
+    result = ((value << 1) | carry_in) & 0xFF
+    cpu.bus.write8(address, result)
+    cpu.a &= result
+    cpu.set_zn(cpu.a)
+    return 0
+
+
+def sre(cpu: "CPU", address: int) -> int:
+    """LSR memory, then EOR A with the shifted value."""
+    value = cpu.bus.read8(address)
+    cpu.flags.c = bool(value & 0x01)
+    result = (value >> 1) & 0xFF
+    cpu.bus.write8(address, result)
+    cpu.a ^= result
+    cpu.set_zn(cpu.a)
+    return 0
+
+
+def rra(cpu: "CPU", address: int) -> int:
+    """ROR memory, then ADC A with the rotated value -- the carry the ROR
+    produces feeds directly into the ADC's carry-in, same as real hardware
+    (both steps share the same flags.c, mutated in place)."""
+    value = cpu.bus.read8(address)
+    carry_in = 0x80 if cpu.flags.c else 0
+    cpu.flags.c = bool(value & 0x01)
+    result = (value >> 1) | carry_in
+    cpu.bus.write8(address, result)
+    _apply_adc(cpu, result)
+    return 0
+
+
+def anc(cpu: "CPU", address: int) -> int:
+    """AND A with the operand, then copy the result's sign bit into carry
+    (as if it had gone through ASL/ROL) -- both $0B and $2B are this."""
+    cpu.a &= cpu.bus.read8(address)
+    cpu.set_zn(cpu.a)
+    cpu.flags.c = bool(cpu.a & 0x80)
+    return 0
+
+
+def alr(cpu: "CPU", address: int) -> int:
+    """AND A with the operand, then LSR the accumulator."""
+    cpu.a &= cpu.bus.read8(address)
+    cpu.flags.c = bool(cpu.a & 0x01)
+    cpu.a = (cpu.a >> 1) & 0xFF
+    cpu.set_zn(cpu.a)
+    return 0
+
+
+def arr(cpu: "CPU", address: int) -> int:
+    """AND A with the operand, then ROR the accumulator, with C/V set from
+    bits 6/5 of the result rather than the usual ROR-carry-out rule.
+
+    This is the widely-documented binary-mode formula. Real NMOS hardware
+    has an additional decimal-mode-dependent wrinkle here (like ADC/SBC's
+    own quirky decimal flag behavior, see _adc_decimal's note) that this
+    does not reproduce -- a disclosed gap, not an oversight, since ARR in
+    decimal mode is vanishingly rare in real C64 software.
+    """
+    cpu.a &= cpu.bus.read8(address)
+    carry_in = 0x80 if cpu.flags.c else 0
+    cpu.a = ((cpu.a >> 1) | carry_in) & 0xFF
+    cpu.set_zn(cpu.a)
+    bit6 = bool(cpu.a & 0x40)
+    bit5 = bool(cpu.a & 0x20)
+    cpu.flags.c = bit6
+    cpu.flags.v = bit6 != bit5
+    return 0
+
+
+def sbx(cpu: "CPU", address: int) -> int:
+    """(A AND X) - operand -> X, flags set like CMP (a fused CMP+DEX)."""
+    value = cpu.bus.read8(address)
+    combined = cpu.a & cpu.x
+    cpu.x = (combined - value) & 0xFF
+    cpu.flags.c = combined >= value
+    cpu.set_zn(cpu.x)
+    return 0
+
+
+def jam(cpu: "CPU", address: Optional[int]) -> int:
+    """JAM/KIL/HLT: on real hardware this locks the CPU in an internal
+    fetch cycle indefinitely -- there's no instruction to "finish", only a
+    reset gets it out. Modeled as a distinct, loud failure rather than a
+    silent infinite loop or folding into IllegalOpcodeError, since this is
+    documented, real opcode behavior, not something unimplemented."""
+    from .cpu import ProcessorJammed  # deferred: avoids a cpu<->instructions import cycle
+
+    opcode_pc = (cpu.pc - 1) & 0xFFFF
+    raise ProcessorJammed(cpu.bus.read8(opcode_pc), opcode_pc)

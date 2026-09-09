@@ -791,11 +791,13 @@ emulated KERNAL never actually sees.
       KERNAL jumped into the cartridge's own entry point ($8012,
       matching its own cold-reset vector exactly) within 33 CPU steps
       of reset.
-    - `scripts/run_c64.py --cartridge path.crt`, or auto-scans
-      `cartridge-slot/` (gitignored, same convention as `roms/`) for the
-      first file found, deterministically (sorted). Unsupported
-      cartridges print a clear reason and the emulator continues
-      without one, rather than crashing.
+    - `scripts/run_c64.py --cartridge path.crt` loads it explicitly;
+      `cartridge-slot/` (gitignored, same convention as `roms/`) is just
+      a suggested place to keep `.crt` files, never auto-scanned -- a
+      plain run with no `--cartridge` flag stays cartridge-free even
+      with files in that directory. Unsupported cartridges print a
+      clear reason and the emulator continues without one, rather than
+      crashing.
     - `docs/cartridge.md` -- the full format tables, the verified
       memory-map interaction, and known gaps, written before/alongside
       the code per this project's per-chip documentation convention.

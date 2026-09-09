@@ -9,6 +9,11 @@ extra: `pip install -e ".[peripherals]"`.
 RESTORE is mapped to F12 (see peripherals/keyboard.py -- real hardware
 wires it directly to NMI, not through the keyboard matrix).
 
+The numeric keypad drives one C64 joystick port at a time (see
+peripherals/joystick_input.py) -- 8/2/4/6 for up/down/left/right, 7/9/1/3
+for diagonals, 0 for fire. Defaults to port 2 (the real-world default
+for single-joystick software); F2 switches which port it drives.
+
 Audio plays through `sounddevice` (PortAudio), not `pygame.mixer` -- see
 peripherals/audio.py's module docstring for why: real playback through
 pygame's Sound/Channel queueing produced audible artifacts (worst at the
@@ -35,12 +40,19 @@ minutes. The screen updates periodically (not per keystroke) during a
 long paste so it doesn't look frozen, and the window stays responsive to
 being closed.
 
-Cartridges: drop a .crt file in cartridge-slot/ (gitignored) and it's
-auto-loaded like a real one plugged into the expansion port -- only the
-first file found is used. Generic/type-0 cartridges only (plain,
-static ROM, no bank-switching registers) -- see docs/cartridge.md for
-what that covers and doesn't. Pass --cartridge to load a specific file
-instead of scanning the directory.
+Cartridges: pass --cartridge path/to/file.crt to load it, like plugging
+one into the expansion port -- only loaded when explicitly named, so
+files can sit in cartridge-slot/ (gitignored) without being picked up
+on a plain run. Generic/type-0 cartridges only (plain, static ROM, no
+bank-switching registers) -- see docs/cartridge.md for what that covers
+and doesn't.
+
+If the CPU hits a JAM/KIL opcode or one of the still-unimplemented
+chip-unstable illegal opcodes (see docs/6502-reference.md), that's a
+real, documented failure mode -- real hardware genuinely halts there too,
+needing a reset. This degrades gracefully rather than crashing: a message
+prints to the console, the window stays open showing the machine's last
+frame, and stepping simply stops -- close the window to exit.
 
 Usage:
     scripts/stage_roms.sh   # once, if you haven't already
@@ -64,8 +76,10 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from c64.cartridge import Cartridge, UnsupportedCartridge  # noqa: E402
 from c64.machine import Machine  # noqa: E402
+from c6502.emulator.cpu import IllegalOpcodeError, ProcessorJammed  # noqa: E402
 from peripherals.audio import AudioOutput  # noqa: E402
 from peripherals.auto_type import AutoTyper  # noqa: E402
+from peripherals.joystick_input import JoystickInput  # noqa: E402
 from peripherals.keyboard import Keyboard  # noqa: E402
 from peripherals.screen import CYCLES_PER_FRAME, Screen  # noqa: E402
 
@@ -74,20 +88,6 @@ from peripherals.screen import CYCLES_PER_FRAME, Screen  # noqa: E402
 # docs/roadmap.md's Phase 4/7 notes) -- how long --type-file waits before
 # it starts, so keystrokes don't land during boot and go unseen.
 BOOT_SETTLE_FRAMES = 150
-
-# Drop a .crt file in here to have it behave like a real cartridge
-# plugged into the expansion port -- gitignored, never committed (see
-# docs/cartridge.md). Only the first file found (sorted, so it's
-# deterministic) is loaded; if you want a specific one, pass --cartridge
-# instead and leave this directory alone or empty.
-CARTRIDGE_SLOT_DIR = REPO_ROOT / "cartridge-slot"
-
-
-def _find_cartridge_in_slot() -> Path | None:
-    if not CARTRIDGE_SLOT_DIR.is_dir():
-        return None
-    candidates = sorted(p for p in CARTRIDGE_SLOT_DIR.iterdir() if p.is_file())
-    return candidates[0] if candidates else None
 
 # How often (wall-clock seconds) the fast-forward typing loop checks for
 # window-close events and redraws the screen, so a long paste doesn't
@@ -114,7 +114,7 @@ TYPING_UI_CHECK_INTERVAL = 0.1
 VIDEO_DRAW_EVERY_WITH_AUDIO = 5
 
 
-def _dispatch_events(machine, keyboard, auto_typer) -> bool:
+def _dispatch_events(machine, keyboard, auto_typer, joystick_input) -> bool:
     """Drain pending pygame events and apply them; returns False once a
     QUIT is seen. Used by both the normal per-frame loop and the
     fast-forward typing loop's periodic UI check -- the two must handle
@@ -135,6 +135,7 @@ def _dispatch_events(machine, keyboard, auto_typer) -> bool:
                 auto_typer.type_text(text)
         else:
             keyboard.handle_event(event, machine)
+            joystick_input.handle_event(event)
     return still_running
 
 
@@ -161,8 +162,8 @@ def main() -> None:
     parser.add_argument(
         "--cartridge",
         type=Path,
-        help="load this specific .crt file instead of auto-scanning cartridge-slot/ "
-        "(generic/type-0 cartridges only -- see docs/cartridge.md)",
+        help="load this .crt file (generic/type-0 cartridges only -- see docs/cartridge.md); "
+        "not loaded unless explicitly passed, even if cartridge-slot/ has files in it",
     )
     parser.add_argument(
         "--no-video-draw",
@@ -182,55 +183,71 @@ def main() -> None:
 
     program_text = args.type_file.read_text() if args.type_file else None
 
-    cartridge_path = args.cartridge if args.cartridge is not None else _find_cartridge_in_slot()
     cartridge = None
-    if cartridge_path is not None:
+    if args.cartridge is not None:
         try:
-            cartridge = Cartridge.from_file(cartridge_path)
-            print(f"Cartridge loaded: {cartridge_path.name}" + (f" ({cartridge.name})" if cartridge.name else ""))
+            cartridge = Cartridge.from_file(args.cartridge)
+            print(f"Cartridge loaded: {args.cartridge.name}" + (f" ({cartridge.name})" if cartridge.name else ""))
         except UnsupportedCartridge as exc:
-            print(f"Not loading {cartridge_path.name}: {exc}")
+            print(f"Not loading {args.cartridge.name}: {exc}")
 
     machine = Machine.from_roms(roms_dir, cartridge=cartridge, enable_audio=not args.no_audio)
     screen = Screen(scale=2)
     keyboard = Keyboard(machine.keyboard)
     auto_typer = AutoTyper(machine.keyboard)
+    joystick_input = JoystickInput(machine.joystick1, machine.joystick2)
     audio = AudioOutput(machine.sid) if not args.no_audio else None
 
     carry = 0
     frame_count = 0
     running = True
+    halted = False
     try:
         while running:
-            running = _dispatch_events(machine, keyboard, auto_typer)
+            running = _dispatch_events(machine, keyboard, auto_typer, joystick_input)
 
             frame_count += 1
             if program_text is not None and frame_count == BOOT_SETTLE_FRAMES:
                 auto_typer.type_text(program_text)
 
-            if auto_typer.busy:
-                was_audio_enabled = machine.enable_audio
-                machine.enable_audio = False
-                last_ui_check = time.perf_counter()
-                while auto_typer.busy and running:
-                    auto_typer.advance(machine.step())
-                    now = time.perf_counter()
-                    if now - last_ui_check > TYPING_UI_CHECK_INTERVAL:
-                        running = _dispatch_events(machine, keyboard, auto_typer)
-                        if not args.no_video_draw:
-                            screen.draw(machine.vic.render_frame(machine.bus))
-                        screen.tick()
-                        last_ui_check = now
-                machine.enable_audio = was_audio_enabled
-                carry = 0  # resume normal per-frame cadence fresh after the burst
-            else:
-                total = carry
-                while total < CYCLES_PER_FRAME:
-                    cycles = machine.step()
-                    total += cycles
-                    if audio is not None:
-                        audio.advance(cycles)
-                carry = total - CYCLES_PER_FRAME
+            if not halted:
+                try:
+                    if auto_typer.busy:
+                        was_audio_enabled = machine.enable_audio
+                        machine.enable_audio = False
+                        last_ui_check = time.perf_counter()
+                        while auto_typer.busy and running:
+                            auto_typer.advance(machine.step())
+                            now = time.perf_counter()
+                            if now - last_ui_check > TYPING_UI_CHECK_INTERVAL:
+                                running = _dispatch_events(machine, keyboard, auto_typer, joystick_input)
+                                if not args.no_video_draw:
+                                    screen.draw(machine.vic.render_frame(machine.bus))
+                                screen.tick()
+                                last_ui_check = now
+                        machine.enable_audio = was_audio_enabled
+                        carry = 0  # resume normal per-frame cadence fresh after the burst
+                    else:
+                        total = carry
+                        while total < CYCLES_PER_FRAME:
+                            cycles = machine.step()
+                            total += cycles
+                            if audio is not None:
+                                audio.advance(cycles)
+                        carry = total - CYCLES_PER_FRAME
+                except (IllegalOpcodeError, ProcessorJammed) as exc:
+                    # A real, documented CPU failure mode (see cpu.py) --
+                    # degrade gracefully instead of taking the whole window
+                    # down with an uncaught traceback. The emulated machine
+                    # genuinely has nothing left to do (this is exactly what
+                    # real hardware does too: a halted/jammed 6502 needs a
+                    # reset, there's no "next instruction" to recover into)
+                    # -- freeze here, keep showing its last frame, and stay
+                    # responsive to being closed.
+                    halted = True
+                    print(f"\nCPU halted: {exc}")
+                    print("The emulated machine has stopped -- the window "
+                          "stays open showing its last frame; close it to exit.")
 
             should_draw = not args.no_video_draw and (
                 audio is None or frame_count % VIDEO_DRAW_EVERY_WITH_AUDIO == 0

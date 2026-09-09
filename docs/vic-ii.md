@@ -352,11 +352,14 @@ script's render showed as black. Fixed by having the script use
   steal cycles, and sprite DMA isn't cycle-costed at all -- but nothing
   actually *spends* that cost against the CPU's own budget, because
   nothing yet interleaves the CPU and VIC-II together in a real running
-  loop that could remove cycles from one to give to the other. That
-  needs a real top-level "machine" object, which doesn't exist yet (the
-  same gap already flagged in `docs/cia.md` for `irq_line` and real
-  elapsed time, and for wiring CIA1/VIC-II's IRQ output and CIA2's NMI
-  output to the CPU's actual interrupt pins).
+  loop that could remove cycles from one to give to the other. `Machine`
+  (Phase 7, `docs/machine.md`) exists now and does wire CIA1/VIC-II's IRQ
+  output and CIA2's NMI output to the CPU's actual interrupt pins, but it
+  drives `VicII.tick(cycles)` with whatever cycles the CPU's own
+  instruction already took -- it doesn't feed cycles *back* the other
+  way, so this specific gap (real cycle stealing) survives `Machine`'s
+  existence and needs its own, separate fix: `CPU.step()` would need to
+  accept extra stolen cycles mid-instruction, which it doesn't today.
 - **Frame/border geometry is an approximation**, not real hardware's
   raster geometry: `render_frame` produces a fixed 384×272 image (320×200
   visible text/graphics area plus a 32px/36px border margin -- the same

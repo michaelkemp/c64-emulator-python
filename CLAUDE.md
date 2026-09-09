@@ -150,8 +150,13 @@ scripts/
                           # and writes a WAV file (Phase 6)
   run_c64.py             # boots the staged ROMs; screen+keyboard+audio,
                           # --type-file / Ctrl+V program input (Phase 8-10),
-                          # --cartridge / auto-scans cartridge-slot/ (Phase 11)
-cartridge-slot/        # drop a .crt here (gitignored) -- see docs/cartridge.md
+                          # --cartridge path.crt (explicit only, Phase 11)
+  wrap_raw_cartridge.py  # wraps a raw/headerless ROM chip dump (no .crt
+                          # container) into a proper generic/type-0 .crt,
+                          # see docs/cartridge.md's Usage section
+cartridge-slot/        # suggested place for .crt files (gitignored); never
+                        # auto-loaded -- pass --cartridge explicitly, see
+                        # docs/cartridge.md
 examples/
   sound_test.bas          # plays a scale on SID voice 1
   sprite_test.bas         # a bouncing sprite -- see run_c64.py --type-file
@@ -180,10 +185,11 @@ src/
     keyboard.py            # real key events -> KeyboardMatrix (Phase 9)
     audio.py               # Sid.output_sample() -> sounddevice (Phase 10)
     auto_type.py            # reliable frame-timed program input (--type-file/Ctrl+V)
+    joystick_input.py       # numeric keypad -> one Joystick port at a time, F2 to switch
 tests/
   emulator/             # CPU core tests (ported)
   asm/                  # assembler tests (ported, one adapted)
-  peripherals/          # Screen + Keyboard + Audio + AutoTyper tests -- gated behind pytest.importorskip
+  peripherals/          # Screen + Keyboard + Audio + AutoTyper + JoystickInput tests -- gated behind pytest.importorskip
   c64/                  # Bus + CpuPort + CIA + keyboard/joystick + VIC-II + SID + Machine + Cartridge tests
 ```
 
@@ -461,9 +467,10 @@ Summary:
       autostart**: the genuine, unmodified KERNAL's own CBM80-signature
       check does it, confirmed by booting with the real cartridge and
       watching the CPU jump into it within 33 steps of reset.
-      `scripts/run_c64.py` auto-scans `cartridge-slot/` (gitignored, like
-      `roms/`) for the first file found, or `--cartridge path.crt` for a
-      specific one. `docs/cartridge.md` has the full format/verified
+      `scripts/run_c64.py --cartridge path.crt` loads one explicitly
+      (the auto-scan of `cartridge-slot/` this originally shipped with
+      was later removed -- see the dedicated entry below). `docs/
+      cartridge.md` has the full format/verified
       truth table/known gaps; 17 new tests (`tests/c64/test_cartridge.py`,
       synthetic `.crt` bytes, no vendored images; 6 more in
       `test_bus.py`). Disk (the rest of Phase 11) not started.
@@ -517,9 +524,184 @@ Summary:
       `docs/vice-gap-analysis.md` for the full per-chip breakdown and the
       two-item actionable list -- nothing fixed yet, this was a
       documentation pass only, matching what was asked for.
-- Next up: disk (rest of Phase 11), real per-scanline VIC-II rendering, or
-  one of the two small items `docs/vice-gap-analysis.md` flagged as
-  actionable (illegal-opcode crash behavior, SID digi-playback test)
+- [x] **Removed `cartridge-slot/` auto-scan from `run_c64.py`.** It
+      originally loaded the first file found in `cartridge-slot/`
+      whenever `--cartridge` wasn't passed, unlike `--type-file`, which
+      only ever loads what's named on the command line. Inconsistent
+      with the example-program convention, and meant a `.crt` had to be
+      physically removed from the directory to run without a cartridge.
+      Now `--cartridge path.crt` is the only way to load one;
+      `cartridge-slot/` is just a suggested (gitignored) place to keep
+      files, never scanned. See `docs/cartridge.md` and `docs/
+      roadmap.md`'s Phase 11 entry.
+- [x] **Implemented 97 of the 105 undocumented/"illegal" 6502 opcodes**,
+      reversing `docs/6502-reference.md`'s original "not implementing
+      these" decision now that its own stated condition is met: real C64
+      software (copy-protected commercial games, demoscene code) genuinely
+      depends on them, both for code density and as a deliberate
+      anti-emulation trick. Covers the reliable combined ops (`LAX`, `SAX`,
+      `DCP`, `ISC`, `SLO`, `RLA`, `SRE`, `RRA`, `ANC`, `ALR`, `ARR`, `SBX`,
+      `USBC`) and all multi-byte NOPs; the 12 `JAM`/`KIL` opcodes get their
+      own `ProcessorJammed` exception (real hardware genuinely halts on
+      these, not an unimplemented-instruction case). The 8 chip-unstable
+      opcodes (`ANE`/`XAA`, `LXA`, `LAS`, `SHA`, `SHX`, `SHY`, `TAS`) stay a
+      deliberate, documented gap -- their real behavior varies by chip
+      series/analog bus conditions, so "correct" isn't even well-defined.
+      **Verified without vendoring anything**: researched a verified-license
+      NMOS-specific illegal-opcode test ROM first (matching this project's
+      license-discipline convention) and found none -- Klaus Dormann's own
+      "extended" test in the same repo the Dormann suite already used here
+      comes from turned out to test the *65C02's* undefined opcodes (a
+      different chip, different behavior), and the classic community
+      alternative (Wolfgang Lorenz's suite/`AllSuiteA`) is only ever
+      described as "believed public domain" with no primary source --
+      exactly the kind of unverified claim this project's ROM-licensing
+      lesson already warned about. Verified instead with hand-computed test
+      vectors (`tests/emulator/test_illegal_opcodes.py`, 40 new tests) the
+      same way this project's other from-scratch tests work, and confirmed
+      the existing Dormann *functional* suite (legal opcodes) still passes
+      unchanged despite refactoring shared ADC/SBC/CMP internals to support
+      the new combined ops. Also fixed a latent assembler bug this exposed:
+      `src/c6502/asm/encoding.py` inverted the CPU's opcode table assuming
+      every opcode's (mnemonic, mode) pair was unique, which several
+      illegal opcodes violate (e.g. six different illegal `NOP`-impl
+      opcodes) -- fixed by excluding illegal opcodes from the assembler's
+      table entirely, since there's no need to *assemble* them, only to
+      decode/execute real programs that already contain them. See
+      `docs/6502-reference.md` and `docs/vice-gap-analysis.md` for the full
+      writeup.
+- [x] **Verified SID "digi-playback" — the last item `docs/
+      vice-gap-analysis.md` had flagged as actionable.** Not a single
+      yes/no: `Sid.output_sample()` applies `$D418`'s volume nibble as one
+      clean linear multiply on the whole mixed signal, which splits real
+      C64 digi-playback into two techniques with two different outcomes.
+      Amplitude-modulating an already-playing (or deliberately `TEST`-bit-
+      held) tone via rapid volume rewrites **works correctly** here —
+      verified with a synthetic 16-step volume ramp producing 16 distinct,
+      evenly-spaced output levels and a clean periodic waveform (confirmed
+      by counting ramp cycles in the rendered audio, not just eyeballing
+      it). Riding the SID's own analog DC leakage with *no* oscillator
+      running **cannot work** in a linear model (zero times any volume is
+      still zero) — a genuine, disclosed gap, not a bug, and not fixable
+      without the same reSID-vendoring license question already declined
+      for the filter/combined-waveforms. See `tests/c64/
+      test_sid_digi_playback.py`, `scripts/sid_digi_playback_diagnostic.py`
+      (renders both scenarios as actual WAVs), and `docs/sid.md`'s Known
+      Gaps for the full writeup. Both of `docs/vice-gap-analysis.md`'s
+      "Net recommendation" items are now done.
+- [x] **Fixed the CIA TOD clock to actually advance with real elapsed
+      time — a real gap this session's own audit caught `docs/cia.md`
+      mis-describing** (it said IRQ delivery was still unwired too, which
+      turned out already fixed since Phase 7; only the TOD-driving half
+      of that old note was still genuinely true). `CIA6526.tick(cycles)`
+      -- the same real-elapsed-PHI2-cycles call `Machine.step()` already
+      made every step for the timers -- now also advances TOD, via an
+      all-integer tenths-of-a-cycle accumulator (`cycles * 10`,
+      subtracting `PAL_CLOCK_HZ` per tenth-tick). **Caught a real bug in
+      my own first attempt before it shipped**: a float-based accumulator
+      (`PAL_CLOCK_HZ / 10` = 98524.8, not evenly divisible) drifted short
+      by a hair after repeated subtraction, firing only 9 ticks instead of
+      10 across an exact one-second boundary -- caught by a test that
+      asserted an *exact* boundary rather than "approximately right"
+      timing, fixed by switching to all-integer arithmetic instead of
+      tuning the float. Verified against the real KERNAL via `Machine`:
+      both CIA1 and CIA2's independent TOD clocks now advance correctly,
+      not just in isolated unit tests. See `docs/cia.md`'s TOD section
+      (also fixed its stale IRQ-wiring claim in the same pass) and
+      `tests/c64/test_cia.py`.
+- [x] **Added `scripts/wrap_raw_cartridge.py`** to turn a raw, headerless
+      ROM chip dump into a proper generic/type-0 `.crt` this project's
+      `Cartridge.from_file()` already parses -- for real cartridge dumps
+      that circulate without the `.crt` container (a handful of `.bin`
+      files turned up in `cartridge-slot/`: Simon's BASIC as two separate
+      8K chip files, and a diagnostic cartridge's 64KB EPROM dump).
+      Builds the ~80-byte header by hand and round-trips the result
+      through the real parser before declaring success, rather than
+      trusting the byte layout blindly. **Verified against all three real
+      cases, not just parsed**: Simon's BASIC (two `--chip` args) renders
+      its genuine "EXTENDED CBM V2 BASIC" banner. The diagnostic EPROM
+      turned out to hold two complete, independent 16K cartridge images
+      packed back-to-back -- confirmed by finding a *second*, separate
+      CBM80 signature partway through the 64KB file, with the file's
+      still-unused remainder reading as unprogrammed `$FF` fill -- so
+      **no bank-switching support was needed at all**, just slicing
+      (`ADDR:PATH:OFFSET:LENGTH`) and wrapping each half. The first slice
+      renders a genuine "C-64 DIAGNOSTIC REV586220++" hardware test
+      screen (zero page/stack/screen RAM checks, real chip list: 6510,
+      6526x2, 6567, 6581). The second slice hits `ProcessorJammed`
+      almost immediately -- traced it precisely before concluding
+      anything: not a real JAM, but the CPU landing one byte short of a
+      completely ordinary `CMP #$22` in the real KERNAL (confirmed by
+      reading the actual KERNAL ROM bytes at that address), meaning this
+      second module most likely isn't meant to autostart cold on its own
+      -- real hardware probably reaches it via a menu in the first module
+      instead, not a bug in this project's own emulation. See
+      `docs/cartridge.md`'s new "Wrapping a raw/headerless ROM dump"
+      section for the full account.
+- [x] **Implemented Ultimax cartridge mode (GAME=0, EXROM=1)** —
+      `src/c64/cartridge.py` now accepts it (ROMH's CHIP packet loads at
+      `$E000` instead of `$A000`), and `Bus._read_ultimax`/`_write_ultimax`
+      implement the real memory map: `$0000-$0FFF` ordinary RAM,
+      `$1000-$7FFF`/`$A000-$CFFF` open bus (no RAM chip-select in this
+      mode at all — the real "only 4K available" limitation), `$8000-
+      $9FFF` ROML, `$D000-$DFFF` always I/O regardless of CHAREN,
+      `$E000-$FFFF` ROMH replacing the KERNAL entirely. Verified against
+      VICE's actual source (`c64meminit.c`, `c64cartmem.c`), not assumed
+      — caught a real surprise this way: writes to `$8000-$9FFF`/
+      `$E000-$FFFF` are genuine no-ops in this mode for a generic
+      cartridge, *not* writes to the RAM underneath the way non-Ultimax
+      ROM-overlaid regions already work (VICE's own `roml_store`/
+      `romh_store` have no RAM fallback for an unrecognized/generic
+      cartridge type here). This was motivated by two real cartridges
+      that turned out to need it: the genuine vintage Dead Test cartridge
+      (previously mis-extracted at the wrong address/size entirely —
+      that whole earlier investigation was analyzing a fictional 16K/
+      `$8000` configuration) and DesTestMAX, a modern, actively-maintained
+      homebrew equivalent whose manual (read for understanding, per its
+      license's explicit no-reverse-engineering clause) confirmed the
+      real Ultimax requirement directly. **Verified end-to-end against
+      both real cartridges, not just unit tests**: both now load and run
+      to completion with no crash (previously: `UnsupportedCartridge` for
+      both, or a wild-jump JAM crash from the earlier wrong-configuration
+      analysis). The real Dead Test cartridge's screen memory decodes
+      byte-for-byte to its own genuine product string, `"C-64 DEAD TEST
+      REV 718220"` — an exact match to the cartridge's own `.crt` header
+      name, read back through the emulated VIC-II's own memory view.
+      **Chased down and resolved what first looked like a rendering gap,
+      not left as an open question**: an early render at 30M instructions
+      showed a blank screen despite the correct screen-matrix text
+      already being present. Traced precisely rather than guessed: the
+      diagnostic's own memory tests legitimately *clear* RAM (including
+      its own custom font bitmap, used instead of character ROM) as part
+      of testing it -- confirmed by sampling at a different instruction
+      count (10M) where the exact same font region held a correct,
+      recognizable 8x8 'C' glyph. Re-rendered at that point and got a
+      fully legible, correct real diagnostic screen: "C-64 DEAD TEST REV
+      718220", "ZERO PAGE OK"/"STACK PAGE OK"/"SCREEN RAM", the chip-test
+      box (4164 RAM, U9-U12/U21-U24), and a live "COUNT"/TOD display --
+      matching real Dead Test hardware output exactly, not an
+      approximation. `scripts/wrap_raw_cartridge.py` gained `--ultimax`
+      to build these headers. See `docs/cartridge.md`'s new "Ultimax
+      mode" section for the full verified memory map and tests in
+      `tests/c64/test_bus.py`/`test_cartridge.py`.
+- [x] **Real joystick input** (`src/peripherals/joystick_input.py`,
+      `JoystickInput`) — the numeric keypad drives one C64 `Joystick`
+      port at a time (8/2/4/6 cardinal, 7/9/1/3 diagonals asserting two
+      direction bits at once exactly like a real joystick's own
+      microswitches, 0 for fire), defaulting to port 2 (`CIA1` Port A,
+      the real-world convention for single-joystick software -- see
+      `keyboard_matrix.py`'s `Cia1Ports`), switchable at runtime with F2
+      since this project has no real second input device to dedicate to
+      each port. Overlapping diagonal+cardinal keys are reference-counted
+      per direction, the same pattern `peripherals/keyboard.py` already
+      uses for its synthesized LSHIFT -- releasing one doesn't clobber a
+      direction another held key still wants. Wired into `run_c64.py`'s
+      existing event dispatch. See `docs/cia.md`'s "Keyboard matrix and
+      joysticks" section and `tests/peripherals/test_joystick_input.py`.
+- Next up: disk (rest of Phase 11) or real per-scanline VIC-II rendering —
+  no more small, contained items remain on the actionable list; everything
+  else left is a real architecture change or blocked on the
+  reSID license decision already made.
 
 ## Reference documentation
 

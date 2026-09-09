@@ -176,23 +176,31 @@ approximation (no two real chips agree closely enough to make a single
 - **No paddle input** (`$19`/`$1A` just read `$FF`) and no external audio
   input to the filter (`$17` bit 3 is stored but does nothing) -- neither
   exists in this project.
-- **"Digi-playback" (4-bit sample-through-volume-register) support is
-  untested and unverified either way.** A real, well-known technique:
-  some C64 music/SFX routines rewrite `$D418`'s low nibble (master
-  volume) rapidly to ride the SID's residual DC bias as crude PCM. This
-  project's `output_sample()` reads `MODE_VOLUME` once per output sample
-  (~22.6 emulated cycles at 44.1kHz), and register writes only ever
-  happen at `Machine.step()` instruction granularity -- nothing here was
-  built with or against this trick in mind, so whether it'd sound right
-  is genuinely unknown, not confirmed-working and not confirmed-broken.
-  Real-world impact is real but niche (a specific subset of loader
-  jingles/digi-tunes, not ordinary gameplay audio) -- see
+- **"Digi-playback" (4-bit sample-through-volume-register): now verified,
+  and it's genuinely two different techniques with two different
+  outcomes here**, not one yes/no answer. `output_sample()` applies
+  `MODE_VOLUME`'s low nibble as a single clean linear multiply on the
+  whole mixed signal, which means:
+  - **Works correctly**: the common real technique of rewriting `$D418`
+    rapidly to amplitude-modulate an *already-playing* tone (or a voice
+    deliberately held at a stable nonzero level via `TEST` + a waveform,
+    with its envelope at full sustain -- a real, documented C64 trick in
+    its own right). A linear volume multiply reproduces this correctly:
+    verified with a synthetic 16-step volume ramp over a held baseline,
+    producing 16 distinct, evenly-spaced output levels and a clean,
+    periodic waveform at the ramp's repeat rate (confirmed by counting
+    ramp cycles in the rendered audio, not just eyeballing it) -- see
+    `tests/c64/test_sid_digi_playback.py` and
+    `scripts/sid_digi_playback_diagnostic.py` (`--with-baseline`,
+    the default).
+  - **Cannot work**: the "purer" real technique some digi-tunes use,
+    riding the SID's own analog DC leakage with *no* oscillator running
+    at all. This model has no such leakage -- a true-zero mixed signal
+    times any volume value is still exactly zero -- so this variant is a
+    genuine, disclosed gap, confirmed by the same test/script
+    (`--no-baseline`), not something worth chasing without vendoring
+    reSID-style analog modeling (the same license line already drawn for
+    the filter/combined-waveforms above).
+  Real-world impact: real but niche either way -- a specific subset of
+  loader jingles/digi-tunes, not ordinary gameplay audio. See
   `docs/vice-gap-analysis.md`.
-- **Nothing plays real audio yet.** `Sid.tick(cycles)` advances oscillator
-  and envelope state exactly like `CIA6526.tick`/`VicII.tick`, and
-  `output_sample()` reads the current instantaneous mixed/filtered level
-  -- but nothing yet calls these from a real running loop or feeds the
-  result to an actual audio device. That's the same "no real machine yet"
-  gap noted in `docs/cia.md` and `docs/vic-ii.md`, plus the `peripherals/`
-  layer discussed for later (screen/keyboard/disk/cartridge bridges) is
-  the natural home for an audio output bridge too.

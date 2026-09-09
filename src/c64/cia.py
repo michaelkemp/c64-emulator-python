@@ -3,8 +3,7 @@ the interrupt control register shared by both C64 CIAs.
 
 See docs/cia.md for the register map, the documented behavior this
 implements (cited against the MOS 6526 preliminary datasheet), and the
-known gaps (CNT pin, real serial bus timing, real elapsed time driving
-the TOD clock, wiring `irq_line` to the CPU). This module implements the
+known gaps (CNT pin, real serial bus timing). This module implements the
 chip itself; `keyboard_matrix.py` and `joystick.py` implement the devices
 CIA1's ports are wired to.
 """
@@ -13,12 +12,33 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from c64.vic_ii import PAL_CLOCK_HZ
+
 # Register offsets, mirrored every 16 bytes across each CIA's 256-byte
 # window (see bus.py's CIA_WINDOW).
 PRA, PRB, DDRA, DDRB = 0x0, 0x1, 0x2, 0x3
 TALO, TAHI, TBLO, TBHI = 0x4, 0x5, 0x6, 0x7
 TOD_10THS, TOD_SEC, TOD_MIN, TOD_HR = 0x8, 0x9, 0xA, 0xB
 SDR, ICR, CRA, CRB = 0xC, 0xD, 0xE, 0xF
+
+# On real hardware, TOD is driven by the AC mains frequency (50Hz PAL /
+# 60Hz NTSC) fed into a divide-by-5 or divide-by-6 network to produce a
+# 10Hz tick -- CRA bit 7 (TodClock.rate_50hz) just tells the chip which
+# divisor to use for *that* external signal. This project has no such
+# external TOD pin/mains input at all (nothing drives it), so -- same
+# approach as VicII's raster timing and Sid's sample generation -- TOD is
+# instead driven directly off real elapsed PHI2 cycles at the system
+# clock rate, targeting exactly 10 ticks/real-second regardless of
+# rate_50hz (which is still stored/read back correctly for software that
+# checks it, it just doesn't change tick timing here). See docs/cia.md.
+#
+# PAL_CLOCK_HZ (985248) isn't evenly divisible by 10, so this is tracked
+# in tenths-of-a-cycle (CIA6526._tod_tenth_cycle_accumulator) rather than
+# as a fractional cycles-per-tenth float -- an all-integer accumulator,
+# so accumulated float rounding can never make a long run of tick() calls
+# drift from firing exactly 10 ticks per PAL_CLOCK_HZ cycles elapsed, no
+# matter how the caller chunks those cycles across calls.
+TOD_CYCLES_PER_TENTH = PAL_CLOCK_HZ / 10  # for callers estimating "about how many"
 
 ICR_TIMER_A = 0x01
 ICR_TIMER_B = 0x02
@@ -206,6 +226,7 @@ class CIA6526:
         self._icr_mask = 0x00
         self._icr_flags = 0x00
         self._crb_alarm = False
+        self._tod_tenth_cycle_accumulator = 0  # units of 1/10 PHI2 cycle -- see TOD_CYCLES_PER_TENTH
 
     # -- ports --------------------------------------------------------
 
@@ -411,6 +432,11 @@ class CIA6526:
                 self._icr_flags |= ICR_TIMER_A
             if underflow_b_phi2 or underflow_b_a:
                 self._icr_flags |= ICR_TIMER_B
+
+        self._tod_tenth_cycle_accumulator += cycles * 10
+        while self._tod_tenth_cycle_accumulator >= PAL_CLOCK_HZ:
+            self._tod_tenth_cycle_accumulator -= PAL_CLOCK_HZ
+            self.tick_tenth_second()
 
     def tick_tenth_second(self) -> None:
         if self.tod.tick_tenth():

@@ -3,14 +3,22 @@ register-level format, the verified memory-map interaction with
 `Bus`/`CpuPort`, and known gaps.
 
 **Only "generic" hardware type 0 cartridges are supported** (plain,
-static ROM at $8000-$9FFF and/or $A000-$BFFF, no bank-switching
-registers at all) -- real `.crt` files can name over 100 other hardware
-types (Action Replay, Ocean type, Fun Play, System 3, various freezer
-carts...), each needing its own bespoke, reverse-engineered
-bank-switching register emulation. That's real, additional scope, not
-attempted here -- see docs/roadmap.md's Phase 11. Anything this module
-doesn't support raises `UnsupportedCartridge` with a specific reason,
-never a silent guess.
+static ROM at $8000-$9FFF and/or $A000-$BFFF/$E000-$FFFF, no bank-
+switching registers at all) -- real `.crt` files can name over 100
+other hardware types (Action Replay, Ocean type, Fun Play, System 3,
+various freezer carts...), each needing its own bespoke, reverse-
+engineered bank-switching register emulation. That's real, additional
+scope, not attempted here -- see docs/roadmap.md's Phase 11. Anything
+this module doesn't support raises `UnsupportedCartridge` with a
+specific reason, never a silent guess.
+
+**Ultimax mode (EXROM=1, GAME=0) is supported** for this same generic
+shape: ROMH's CHIP packet loads at $E000 instead of $A000, replacing
+the KERNAL. See `Bus._read_ultimax`/`_write_ultimax` for the real
+memory-map consequences (verified against VICE's own source, not
+assumed) -- most RAM becomes inaccessible in this mode, and even the
+regions that carry ROM don't accept writes into RAM the way the normal
+case does.
 
 Format verified against the standard reference
 (ist.uwaterloo.ca/~schepers/formats/CRT.TXT) and cross-checked directly
@@ -31,6 +39,7 @@ GENERIC_HARDWARE_TYPE = 0
 BANK_SIZE = 0x2000  # 8KB -- one bank's worth of ROML or ROMH
 ROML_ADDRESS = 0x8000
 ROMH_ADDRESS = 0xA000
+ULTIMAX_ROMH_ADDRESS = 0xE000  # ROMH's CHIP packet loads here instead, in Ultimax mode
 
 CHIP_TYPE_ROM = 0
 
@@ -43,7 +52,8 @@ class UnsupportedCartridge(Exception):
 
 class Cartridge:
     """A parsed generic (type 0) cartridge image: at most one 8KB ROML
-    bank ($8000-$9FFF) and one 8KB ROMH bank ($A000-$BFFF), plus the
+    bank ($8000-$9FFF) and one 8KB ROMH bank -- at $A000-$BFFF normally,
+    or at $E000-$FFFF (replacing the KERNAL) in Ultimax mode -- plus the
     real EXROM/GAME line states the real header specifies -- `Bus` reads
     these exactly the way the real 6510/PLA's address decode does (see
     docs/cartridge.md for the verified truth table). `exrom`/`game` are
@@ -51,7 +61,9 @@ class Cartridge:
     high/inactive) -- deliberately not inverted to an "active" boolean,
     to match how every real reference (the CRT spec, VICE's own source,
     the C64 PLA documentation) writes these tables, avoiding a
-    silent double-negation bug.
+    silent double-negation bug. `rom_hi` always holds ROMH's bytes
+    regardless of which address it loaded from in the file -- `Bus`
+    decides where to map it (`$A000` or `$E000`) from `exrom`/`game`.
     """
 
     def __init__(
@@ -91,14 +103,9 @@ class Cartridge:
                 "register emulation -- only generic type 0 (static ROM, no bank "
                 "switching) is supported. See docs/cartridge.md."
             )
-        if exrom == 1 and game == 0:
-            raise UnsupportedCartridge(
-                f"{path}: Ultimax mode (EXROM=1, GAME=0) isn't supported yet -- it "
-                "maps ROM into $E000-$FFFF and disables most RAM, unlike the plain "
-                "8K/16K cases this module handles. See docs/cartridge.md."
-            )
         if exrom == 1 and game == 1:
             raise UnsupportedCartridge(f"{path}: EXROM=1, GAME=1 means no cartridge is present at all")
+        is_ultimax = exrom == 1 and game == 0
 
         rom_lo: bytes | None = None
         rom_hi: bytes | None = None
@@ -129,6 +136,8 @@ class Cartridge:
             elif load_addr == ROML_ADDRESS and img_size == BANK_SIZE:
                 rom_lo = rom_data
             elif load_addr == ROMH_ADDRESS and img_size == BANK_SIZE:
+                rom_hi = rom_data
+            elif is_ultimax and load_addr == ULTIMAX_ROMH_ADDRESS and img_size == BANK_SIZE:
                 rom_hi = rom_data
             else:
                 raise UnsupportedCartridge(

@@ -99,12 +99,42 @@ def test_non_generic_hardware_type_is_rejected(tmp_path):
         Cartridge.from_file(path)
 
 
-def test_ultimax_mode_is_rejected(tmp_path):
+def test_ultimax_romh_at_e000_parses(tmp_path):
     path = tmp_path / "test.crt"
-    path.write_bytes(_header(exrom=1, game=0) + _chip(load_addr=0x8000, data=bytes(0x2000)))
+    path.write_bytes(_header(exrom=1, game=0) + _chip(load_addr=0xE000, data=bytes(range(256)) * 32))
 
-    with pytest.raises(UnsupportedCartridge, match="Ultimax"):
+    cart = Cartridge.from_file(path)
+
+    assert cart.exrom == 1
+    assert cart.game == 0
+    assert cart.rom_hi == bytes(range(256)) * 32
+    assert cart.rom_lo is None
+
+
+def test_ultimax_romh_at_e000_rejected_when_not_ultimax(tmp_path):
+    """A $E000 CHIP packet only means something in Ultimax mode -- outside
+    it, this is just an unrecognized layout, not silently accepted."""
+    path = tmp_path / "test.crt"
+    path.write_bytes(_header(exrom=0, game=1) + _chip(load_addr=0xE000, data=bytes(0x2000)))
+
+    with pytest.raises(UnsupportedCartridge, match="doesn't match"):
         Cartridge.from_file(path)
+
+
+def test_ultimax_with_both_roml_and_romh(tmp_path):
+    """Ultimax mode can have a ROML chip too (at the normal $8000
+    address) alongside ROMH at $E000."""
+    path = tmp_path / "test.crt"
+    path.write_bytes(
+        _header(exrom=1, game=0)
+        + _chip(load_addr=0x8000, data=bytes(range(256)) * 32)
+        + _chip(load_addr=0xE000, data=bytes(reversed(range(256))) * 32)
+    )
+
+    cart = Cartridge.from_file(path)
+
+    assert cart.rom_lo == bytes(range(256)) * 32
+    assert cart.rom_hi == bytes(reversed(range(256))) * 32
 
 
 def test_no_cartridge_lines_are_rejected(tmp_path):

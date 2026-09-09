@@ -6,6 +6,11 @@ passed Klaus Dormann's functional test suite (see
 tests/emulator/test_dormann_functional.py). This test protects that
 guarantee against someone later "fixing" encoding.py with a hand-written
 table that quietly drifts out of sync.
+
+Illegal/undocumented opcodes (OpcodeSpec.illegal) are deliberately
+excluded from ENCODING (see encoding.py's module docstring for why) so
+they're skipped here too -- this test is specifically about the *legal*
+opcode round trip.
 """
 
 from c6502.asm.encoding import opcode_for
@@ -14,4 +19,6 @@ from c6502.emulator.opcodes import OPCODES
 
 def test_every_legal_opcode_round_trips_through_the_assembler_encoding():
     for opcode, spec in OPCODES.items():
+        if spec.illegal:
+            continue
         assert opcode_for(spec.mnemonic, spec.mode) == opcode

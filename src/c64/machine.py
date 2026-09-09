@@ -24,6 +24,7 @@ from c6502.emulator.cpu import CPU
 from c64.bus import Bus
 from c64.cartridge import Cartridge
 from c64.cia import CIA6526
+from c64.disk_drive import DiskDrives
 from c64.joystick import Joystick
 from c64.keyboard_matrix import Cia1Ports, KeyboardMatrix
 from c64.sid import Sid
@@ -64,6 +65,7 @@ class Machine:
         self.cpu.reset()
         self._prev_nmi_line = False
         self.enable_audio = enable_audio
+        self.disk_drives = DiskDrives()
 
     @classmethod
     def from_roms(
@@ -86,9 +88,18 @@ class Machine:
     def step(self) -> int:
         """Execute exactly one CPU instruction, advance every chip by the
         same real elapsed cycles, and deliver any pending interrupts.
-        Returns the number of PHI2 cycles this step consumed."""
-        result = self.cpu.step()
-        cycles = result.cycles
+        Returns the number of PHI2 cycles this step consumed.
+
+        Checks `disk_drives` first: a mounted-device LOAD/SAVE call gets
+        intercepted before the real KERNAL routine would run (see
+        docs/disk.md and disk_drive.py) -- consumes 0 cycles, a disclosed
+        simplification, since strategy 1 doesn't model real disk I/O
+        transfer time at all."""
+        if self.disk_drives.maybe_intercept(self.cpu, self.bus):
+            cycles = 0
+        else:
+            result = self.cpu.step()
+            cycles = result.cycles
 
         self.cia1.tick(cycles)
         self.cia2.tick(cycles)

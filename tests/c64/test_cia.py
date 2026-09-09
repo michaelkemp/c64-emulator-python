@@ -176,3 +176,61 @@ def test_tod_alarm_fires_icr_flag_once_on_match(cia):
     assert cia.read_register(ICR) & 0x04
     cia.tick_tenth_second()
     assert cia.read_register(ICR) & 0x04 == 0  # only fires on the matching edge
+
+
+def test_tick_drives_tod_forward_from_real_elapsed_cycles():
+    """tick(cycles) -- the same real-elapsed-PHI2-cycles interface
+    Machine.step() already calls every step -- should advance TOD too, not
+    just the timers. See TOD_CYCLES_PER_TENTH's derivation in cia.py."""
+    from c64.cia import TOD_CYCLES_PER_TENTH
+
+    cia = CIA6526()
+    cia.tick(round(TOD_CYCLES_PER_TENTH))
+    assert cia.tod.tenths == 1
+
+
+def test_tick_drives_tod_forward_across_a_full_second_without_drift():
+    """PAL_CLOCK_HZ cycles is exactly one real second's worth (10 tenths)
+    -- unlike TOD_CYCLES_PER_TENTH (985248/10 isn't a whole number), this
+    boundary is exact, so it can assert precisely with no rounding
+    slack. Exercises the same all-integer accumulator across many more
+    tenth-ticks than the single-tick test above."""
+    from c64.vic_ii import PAL_CLOCK_HZ
+
+    cia = CIA6526()
+    cia.tick(PAL_CLOCK_HZ)
+    assert (cia.tod.tenths, cia.tod.seconds) == (0, 1)
+
+
+def test_tick_in_small_increments_matches_one_large_tick():
+    """Feeding cycles in small per-instruction-sized chunks (how Machine
+    actually calls this) must land on the same TOD state as one big tick
+    -- the tenth-cycle accumulator must not lose or gain ticks depending
+    on how the caller chunks its input."""
+    from c64.vic_ii import PAL_CLOCK_HZ
+
+    incremental = CIA6526()
+    total_cycles = PAL_CLOCK_HZ * 3  # exactly 3 real seconds
+    remaining = total_cycles
+    while remaining > 0:
+        step = min(7, remaining)  # an arbitrary, non-divisor chunk size
+        incremental.tick(step)
+        remaining -= step
+
+    one_shot = CIA6526()
+    one_shot.tick(total_cycles)
+
+    assert (incremental.tod.tenths, incremental.tod.seconds) == (0, 3)
+    assert (incremental.tod.tenths, incremental.tod.seconds) == (
+        one_shot.tod.tenths,
+        one_shot.tod.seconds,
+    )
+
+
+def test_tick_does_not_advance_tod_while_hours_register_stops_it():
+    from c64.cia import TOD_CYCLES_PER_TENTH
+
+    cia = CIA6526()
+    cia.write_register(0xB, 0x01)  # TOD_HR -- stops the clock
+    cia.tick(round(TOD_CYCLES_PER_TENTH * 5))
+    assert cia.tod.tenths == 0

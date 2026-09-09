@@ -65,7 +65,7 @@ bug):
 | 1 | 1 | No cartridge |
 | 1 | 0 | 8K cartridge (ROML only) |
 | 0 | 0 | 16K cartridge (ROML + ROMH) |
-| 0 | 1 | Ultimax (**not supported** -- see Known gaps) |
+| 0 | 1 | Ultimax -- ROMH's CHIP packet loads at `$E000` instead of `$A000`, see below |
 
 ## Memory-map interaction (verified against VICE's `c64meminit.c`)
 
@@ -97,6 +97,32 @@ the real C64 RAM underneath, exactly like BASIC/KERNAL ROM already
 works in `bus.py` -- not ignored. A generic cartridge has no registers
 of its own at $DE00-$DFFF to intercept those writes differently.
 
+## Ultimax mode (GAME=0, EXROM=1)
+
+A fourth, separate case from the table above -- once active, LORAM/
+HIRAM/CHAREN stop mattering *at all* (`Bus.cart_ultimax`), verified
+directly against VICE's own `c64meminit.c` (memory configs 16-23 all
+show the identical layout regardless of those three bits) and
+`c64cartmem.c` (for the generic/type-0 case this project supports, not
+any of VICE's bank-switching-hardware-specific cartridges):
+
+| Range | Behavior |
+|---|---|
+| `$0000-$0FFF` | Ordinary RAM (unaffected) |
+| `$1000-$7FFF`, `$A000-$CFFF` | **No RAM chip-select at all in this mode** -- the real "only 4K available" limitation Ultimax-mode software (including real historical Commodore diagnostic cartridges) documents. Reads return a fixed open-bus value here (`$FF`) -- real hardware instead reflects whatever the VIC-II itself last read over the shared bus (`vicii_read_phi1` in VICE), which this project doesn't model, matching the same "not worth the precision without a real consumer" simplification already used for the `$01` port's fading bits. |
+| `$8000-$9FFF` | ROML (cartridge), if a ROML chip is present -- reads only. |
+| `$D000-$DFFF` | Always I/O, unconditionally -- CHAREN has no effect in this mode. |
+| `$E000-$FFFF` | ROMH (cartridge) -- **replaces the KERNAL entirely**, including the reset/IRQ/NMI vectors. |
+
+**A genuine surprise, verified rather than assumed by symmetry with the
+non-Ultimax case**: writes to `$8000-$9FFF` and `$E000-$FFFF` are true
+no-ops in Ultimax mode for a generic cartridge -- confirmed directly
+from VICE's own `roml_store`/`romh_store` source, which have no
+fallback-to-RAM path for an unrecognized (i.e. generic) cartridge type
+in this mode. Real hardware's PLA doesn't assert a RAM write-select for
+either range here, cartridge ROM present or not -- unlike the non-
+Ultimax case, where ROM-overlaid writes land in the RAM underneath.
+
 ## Autostart: zero extra code needed
 
 The real KERNAL's own boot routine checks for the "CBM80" signature
@@ -112,16 +138,59 @@ code in this project's boot path at all.
 
 ## Usage
 
-Drop a `.crt` file in `cartridge-slot/` (gitignored, like `roms/`) and
-`scripts/run_c64.py` auto-loads the first file found there; pass
-`--cartridge path/to/file.crt` to load a specific one instead.
-Programmatically: `Machine.from_roms(roms_dir, cartridge_path=...)` or
-build a `Cartridge` and pass it to `Machine`/`Bus` directly.
+Pass `--cartridge path/to/file.crt` to `scripts/run_c64.py` to load a
+`.crt` file, like plugging one into the expansion port. It's only
+loaded when explicitly named on the command line -- files sitting in
+`cartridge-slot/` (gitignored, like `roms/`) are never picked up on
+their own, so a plain run with no `--cartridge` flag stays
+cartridge-free even with files in that directory. Programmatically:
+`Machine.from_roms(roms_dir, cartridge_path=...)` or build a
+`Cartridge` and pass it to `Machine`/`Bus` directly.
 
 `Cartridge.from_file` raises `UnsupportedCartridge` (never a silent
-guess or truncation) for: any hardware type other than 0, Ultimax mode,
-non-ROM chip types (RAM/Flash), bank-switched CHIP packets, or CHIP
-packets at an unexpected load address/size.
+guess or truncation) for: any hardware type other than 0, non-ROM chip
+types (RAM/Flash), bank-switched CHIP packets, or CHIP packets at an
+unexpected load address/size. Ultimax mode (GAME=0, EXROM=1) is
+supported for this same generic shape -- see below.
+
+### Wrapping a raw/headerless ROM dump into a `.crt`
+
+Some real dumps circulate with no `.crt` container at all -- just the
+raw chip bytes (e.g. as separate per-chip files, or a bigger EPROM image
+holding more than the container needs). `scripts/wrap_raw_cartridge.py`
+builds the ~80-byte generic/type-0 container by hand and round-trips the
+result through this project's own `Cartridge.from_file()` before calling
+it done:
+
+```
+scripts/wrap_raw_cartridge.py \
+    --chip 0x8000:chip1_8000.bin --chip 0xA000:chip2_a000.bin \
+    --name "CARTRIDGE NAME" --out cartridge-slot/my_cart.crt
+```
+
+or, to slice one 16K image out of a bigger dump (`ADDR:PATH:OFFSET:LENGTH`):
+
+```
+scripts/wrap_raw_cartridge.py \
+    --chip 0x8000:big_dump.bin:0x0000:0x4000 \
+    --name "CARTRIDGE NAME" --out cartridge-slot/my_cart.crt
+```
+
+Verified end-to-end against three real dumps, not just parsed: Simon's
+BASIC (two separate 8K chip files) renders its real "EXTENDED CBM V2
+BASIC" banner; a combined diagnostic-cartridge EPROM turned out to hold
+two complete, independent 16K images back-to-back (not bank-switched --
+confirmed by finding a second, separate CBM80 signature partway through
+the file, with the still-unused remainder of the EPROM reading as
+unprogrammed `$FF` fill) -- the first slice renders a genuine "C-64
+DIAGNOSTIC REV586220++" chip/memory test screen. The second slice hits
+`ProcessorJammed` almost immediately, but not from a real JAM opcode:
+tracing it landed one byte short of a harmless `CMP #$22` in the real
+KERNAL, i.e. a jump-target-one-byte-off, not an emulator bug -- most
+likely this second module isn't meant to autostart cold on its own (real
+hardware probably reaches it via a menu in the first module instead).
+Worth knowing before assuming any single slice of a multi-image EPROM is
+independently autostart-capable.
 
 ## Known gaps
 

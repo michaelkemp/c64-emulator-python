@@ -3,8 +3,11 @@
 Registers, flags, the fetch/decode/execute step() loop, reset, and basic
 interrupt handling. See docs/6502-reference.md for the ISA notes this is
 built against, docs/testing-strategy.md for how it's validated, and
-docs/roadmap.md for what's implemented vs deferred (undocumented/"illegal"
-opcodes are deliberately unimplemented -- see IllegalOpcodeError below).
+docs/roadmap.md for what's implemented vs deferred. Most undocumented/
+"illegal" opcodes are implemented (see opcodes.py); the remaining
+chip-unstable ones fall through to IllegalOpcodeError below, and the 12
+JAM/KIL opcodes raise the distinct ProcessorJammed instead (see both for
+why they're modeled differently).
 """
 
 from __future__ import annotations
@@ -24,13 +27,36 @@ class Memory(Protocol):
 class IllegalOpcodeError(Exception):
     """Raised for any opcode byte not in opcodes.OPCODES.
 
-    Undocumented/"illegal" 6502 opcodes are deliberately unimplemented (see
-    docs/6502-reference.md) so bugs are loud rather than silently treated
-    as NOPs.
+    Most undocumented/"illegal" 6502 opcodes are implemented (see
+    opcodes.py); the ones still deliberately unimplemented are the
+    chip-unstable group whose real behavior varies by chip series/analog
+    bus conditions (ANE/XAA, LXA, LAS, SHA, SHX, SHY, TAS) -- see
+    docs/6502-reference.md. This stays a loud failure rather than a
+    silent NOP so a program that depends on one of those is obvious, not
+    subtly wrong.
     """
 
     def __init__(self, opcode: int, pc: int) -> None:
         super().__init__(f"illegal/unimplemented opcode ${opcode:02X} at ${pc:04X}")
+        self.opcode = opcode
+        self.pc = pc
+
+
+class ProcessorJammed(Exception):
+    """Raised when a JAM/KIL/HLT opcode executes (12 opcode values -- see
+    opcodes.py's illegal-opcode section).
+
+    On real NMOS 6502/6510 hardware these genuinely freeze the CPU in an
+    internal fetch cycle -- there is no defined "next instruction", only a
+    hardware reset gets it out. Kept as its own exception rather than
+    folded into IllegalOpcodeError: this *is* real, documented opcode
+    behavior, not something unimplemented -- a caller may reasonably want
+    to catch this specifically (e.g. to model a reset) rather than treat
+    it the same as an unimplemented opcode.
+    """
+
+    def __init__(self, opcode: int, pc: int) -> None:
+        super().__init__(f"JAM/KIL opcode ${opcode:02X} at ${pc:04X} -- CPU halted, needs reset")
         self.opcode = opcode
         self.pc = pc
 
