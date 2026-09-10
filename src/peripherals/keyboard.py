@@ -18,6 +18,14 @@ needs).
 `RESTORE` isn't a matrix key on real hardware (see docs/cia.md) -- it's
 mapped here directly to `Machine.cpu.nmi()`, edge-triggered on press,
 matching how `Machine.step()` already treats CIA2's NMI output.
+
+The real C64's `*` is its own dedicated, unshifted key (top-right of the
+QWERTY row, between `@`/`↑`) -- not a Shift+8 combo (real hardware's own
+Shift+8 is `(`, and this project deliberately keeps that mapping rather
+than repurposing it). A standard PC keyboard has no equivalent dedicated
+key, so the numeric keypad's `*` (`K_KP_MULTIPLY`) is used instead --
+safe alongside `JoystickInput`, which only claims the numpad's *digit*
+keys (0-9) for directions/fire, never its operator keys (`*`/`/`/`-`/`+`).
 """
 
 from __future__ import annotations
@@ -52,7 +60,7 @@ KEY_MAP: dict[int, str] = {
     pygame.K_COLON: "COLON", pygame.K_SEMICOLON: "SEMICOLON",
     pygame.K_AT: "AT", pygame.K_EQUALS: "EQUALS",
     pygame.K_SLASH: "SLASH", pygame.K_BACKSLASH: "POUND",
-    pygame.K_ASTERISK: "ASTERISK",
+    pygame.K_ASTERISK: "ASTERISK", pygame.K_KP_MULTIPLY: "ASTERISK",
     pygame.K_RIGHT: "CRSR_RIGHT", pygame.K_DOWN: "CRSR_DOWN",
 }
 

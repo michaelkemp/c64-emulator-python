@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Boot the staged ROMs, show the VIC-II's screen output in a real
-window, accept real keyboard input, and play real SID audio.
+window, accept real keyboard input, and play real SID audio. Also
+supports cartridges (--cartridge) and disk (--disk, KERNAL-trap
+emulation, see docs/disk.md).
 
-Phase 8/9/10: screen + keyboard + audio -- no disk yet (see
-docs/roadmap.md's Phase 11). Requires this project's `peripherals`
-extra: `pip install -e ".[peripherals]"`.
+Requires this project's `peripherals` extra: `pip install -e
+".[peripherals]"`.
 
 RESTORE is mapped to F12 (see peripherals/keyboard.py -- real hardware
 wires it directly to NMI, not through the keyboard matrix).
@@ -47,6 +48,14 @@ on a plain run. Generic/type-0 cartridges only (plain, static ROM, no
 bank-switching registers) -- see docs/cartridge.md for what that covers
 and doesn't.
 
+Disk (KERNAL-trap emulation, see docs/disk.md): a plain run with no
+--disk at all still gets a real, writable/readable, *persistent* disk on
+device 8 -- disk-drive/disk8.d64 (gitignored), seeded from the pristine
+template at src/c64/blank.d64 the first time it's needed, then reused
+and saved back to on every later run, so work survives closing the
+emulator. Pass --disk 8:mydisk.d64 (repeatable, for other device numbers
+too) to use a specific file of your own instead.
+
 If the CPU hits a JAM/KIL opcode or one of the still-unimplemented
 chip-unstable illegal opcodes (see docs/6502-reference.md), that's a
 real, documented failure mode -- real hardware genuinely halts there too,
@@ -60,6 +69,7 @@ Usage:
     scripts/run_c64.py --no-audio
     scripts/run_c64.py --type-file examples/sound_test.bas
     scripts/run_c64.py --cartridge cartridge-slot/some_game.crt
+    scripts/run_c64.py --disk 8:mydisk.d64
 """
 
 from __future__ import annotations
@@ -75,6 +85,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from c64.cartridge import Cartridge, UnsupportedCartridge  # noqa: E402
+from c64.d64 import D64Image  # noqa: E402
 from c64.machine import Machine  # noqa: E402
 from c6502.emulator.cpu import IllegalOpcodeError, ProcessorJammed  # noqa: E402
 from peripherals.audio import AudioOutput  # noqa: E402
@@ -82,6 +93,26 @@ from peripherals.auto_type import AutoTyper  # noqa: E402
 from peripherals.joystick_input import JoystickInput  # noqa: E402
 from peripherals.keyboard import Keyboard  # noqa: E402
 from peripherals.screen import CYCLES_PER_FRAME, Screen  # noqa: E402
+
+# A pristine, correctly-formatted blank disk image, generated once via
+# D64Image.create_blank() and checked in (no license concerns at all --
+# unlike ROMs/cartridges, this is pure structural bytes this project
+# generates itself, not vendored third-party content). Only ever used to
+# seed DEFAULT_DISK_PATH the first time it's needed -- never written back
+# to itself, so it stays pristine across every run (guarded by
+# tests/c64/test_d64.py's test_bundled_blank_template_is_a_valid_pristine_blank_disk).
+BUNDLED_BLANK_DISK = REPO_ROOT / "src" / "c64" / "blank.d64"
+
+# Where a plain run with no --disk at all keeps its device-8 disk --
+# gitignored, same convention as roms/ and cartridge-slot/ (this is your
+# own session's state, not something to track as source). Created fresh
+# from BUNDLED_BLANK_DISK the first time it's needed, then reused and
+# saved back to on every later run -- so a "naked" run persists your
+# work across restarts exactly like an explicit `--disk 8:path` would,
+# without ever touching the checked-in template. Caught directly from a
+# real session: an earlier version of this discarded the naked-run disk
+# on exit instead of saving it here, so work vanished on restart.
+DEFAULT_DISK_PATH = REPO_ROOT / "disk-drive" / "disk8.d64"
 
 # Comfortably more than the ~107 frames boot has taken in practice (RAM
 # test + hardware init before BASIC reaches its keyboard-wait loop -- see
@@ -139,6 +170,17 @@ def _dispatch_events(machine, keyboard, auto_typer, joystick_input) -> bool:
     return still_running
 
 
+def _parse_disk_arg(spec: str) -> tuple[int, Path]:
+    device_str, sep, path_str = spec.partition(":")
+    if not sep or not path_str:
+        raise SystemExit(f"--disk must be DEVICE:PATH, got {spec!r}")
+    try:
+        device = int(device_str)
+    except ValueError:
+        raise SystemExit(f"--disk device number must be an integer, got {device_str!r}") from None
+    return device, Path(path_str)
+
+
 def _clipboard_text() -> str | None:
     """Best-effort real clipboard read (X11/Windows/macOS via SDL) --
     returns None if unavailable or empty, never raises."""
@@ -164,6 +206,16 @@ def main() -> None:
         type=Path,
         help="load this .crt file (generic/type-0 cartridges only -- see docs/cartridge.md); "
         "not loaded unless explicitly passed, even if cartridge-slot/ has files in it",
+    )
+    parser.add_argument(
+        "--disk",
+        action="append",
+        metavar="DEVICE:PATH",
+        help="mount a .d64 image at this device number (8, 9, ...) -- see docs/disk.md. "
+        "Creates a fresh blank image at PATH if it doesn't exist yet, and saves back to "
+        "PATH when the emulator closes. Repeatable, for more than one drive. With no "
+        "--disk at all, device 8 defaults to disk-drive/disk8.d64 (gitignored), which "
+        "persists the same way.",
     )
     parser.add_argument(
         "--no-video-draw",
@@ -192,6 +244,23 @@ def main() -> None:
             print(f"Not loading {args.cartridge.name}: {exc}")
 
     machine = Machine.from_roms(roms_dir, cartridge=cartridge, enable_audio=not args.no_audio)
+
+    disk_specs = list(args.disk) if args.disk else [f"8:{DEFAULT_DISK_PATH}"]
+    disks_to_save_on_exit: dict[int, Path] = {}
+    for spec in disk_specs:
+        device, path = _parse_disk_arg(spec)
+        if path.exists():
+            image = D64Image.load(path)
+            print(f"Disk mounted on device {device}: {path}")
+        elif path == DEFAULT_DISK_PATH:
+            image = D64Image.load(BUNDLED_BLANK_DISK)  # seed from the pristine template
+            print(f"Disk mounted on device {device}: {path} (new, blank)")
+        else:
+            image = D64Image.create_blank(path.stem.upper()[:16])
+            print(f"Disk mounted on device {device}: {path} (new, blank)")
+        machine.disk_drives.mount(device, image)
+        disks_to_save_on_exit[device] = path
+
     screen = Screen(scale=2)
     keyboard = Keyboard(machine.keyboard)
     auto_typer = AutoTyper(machine.keyboard)
@@ -256,6 +325,9 @@ def main() -> None:
                 screen.draw(machine.vic.render_frame(machine.bus))
             screen.tick()
     finally:
+        for device, path in disks_to_save_on_exit.items():
+            machine.disk_drives.images[device].save(path)
+            print(f"Saved disk (device {device}) to {path}")
         if audio is not None:
             audio.close()
         screen.close()

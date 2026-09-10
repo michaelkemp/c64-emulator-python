@@ -1,7 +1,10 @@
+from pathlib import Path
+
 import pytest
 
 from c64.d64 import (
     DATA_BYTES_PER_SECTOR,
+    FILE_TYPE_DEL,
     FILE_TYPE_PRG,
     IMAGE_SIZE,
     D64Image,
@@ -100,6 +103,80 @@ def test_read_nonexistent_file_raises():
         image.read_file("NOPE")
 
 
+def test_bare_asterisk_loads_the_first_directory_entry():
+    # Real hardware's own bare "*" actually means "whatever was last
+    # accessed" (needing disk-head-position state this project doesn't
+    # model) -- deliberately simplified here to "the first directory
+    # entry", which is what a real, freshly-booted `LOAD"*",8,1` actually
+    # hits in practice. See docs/disk.md's Known Gaps.
+    image = D64Image.create_blank("MY DISK")
+    image.write_file("FIRST", b"aaa")
+    image.write_file("SECOND", b"bbb")
+    assert image.read_file("*") == b"aaa"
+
+
+def test_asterisk_after_a_prefix_matches_the_first_name_starting_with_it():
+    image = D64Image.create_blank("MY DISK")
+    image.write_file("OTHER", b"zzz")
+    image.write_file("PACMAN", b"aaa")
+    assert image.read_file("PAC*") == b"aaa"
+
+
+def test_asterisk_ignores_everything_in_the_pattern_after_it():
+    # A real, verified quirk of actual 1541 DOS, not a bug: characters in
+    # the pattern after the "*" are never even looked at, so this can't
+    # be used to filter by a trailing "extension".
+    image = D64Image.create_blank("MY DISK")
+    image.write_file("PICTURE", b"aaa")
+    assert image.read_file("PIC*.KOA") == b"aaa"
+
+
+def test_question_mark_matches_exactly_one_character():
+    image = D64Image.create_blank("MY DISK")
+    image.write_file("CAT", b"aaa")
+    image.write_file("CAR", b"bbb")
+    assert image.read_file("CA?") == b"aaa"
+
+
+def test_question_mark_does_not_match_a_different_length_name():
+    image = D64Image.create_blank("MY DISK")
+    image.write_file("CATS", b"aaa")
+    with pytest.raises(FileNotFoundOnDisk):
+        image.read_file("CA?")
+
+
+def test_wildcard_pattern_with_no_match_raises():
+    image = D64Image.create_blank("MY DISK")
+    image.write_file("PROGRAM", b"aaa")
+    with pytest.raises(FileNotFoundOnDisk):
+        image.read_file("NOPE*")
+
+
+def test_wildcard_load_skips_a_visible_del_type_directory_entry():
+    """Reproduces a real bug found against a real commercial disk
+    (Jumpman): some real disks craft a directory entry typed DEL (0) but
+    still marked "closed" so it *displays* in a directory listing (unlike
+    a genuinely scratched entry, which real DOS never shows at all) --
+    a deliberate, real disk-authoring trick, often a cosmetic separator
+    like "----------------", specifically because DEL-typed entries can
+    never actually be loaded. Jumpman's disk has exactly this as its
+    *first* directory entry; a naive bare "*" match grabbed it, and its
+    garbage track/sector pointer got read back as if it were real file
+    data -- corrupting memory and eventually crashing the emulated CPU on
+    an illegal opcode. Real DOS's own file search skips DEL entries."""
+    image = D64Image.create_blank("MY DISK")
+    image.write_file("----------------", b"x" * 20, file_type=FILE_TYPE_DEL)
+    image.write_file("REALPROG", b"\x01\x08" + b"y" * 20)
+    assert image.read_file("*") == b"\x01\x08" + b"y" * 20
+
+
+def test_load_by_exact_name_also_skips_a_visible_del_type_entry():
+    image = D64Image.create_blank("MY DISK")
+    image.write_file("GHOST", b"x" * 20, file_type=FILE_TYPE_DEL)
+    with pytest.raises(FileNotFoundOnDisk):
+        image.read_file("GHOST")
+
+
 def test_delete_file_frees_its_sectors_and_removes_directory_entry():
     image = D64Image.create_blank("MY DISK")
     before = image.blocks_free()
@@ -142,3 +219,15 @@ def test_save_and_load_round_trip_through_a_real_file(tmp_path):
     reloaded = D64Image.load(path)
     assert reloaded.read_file("PROGRAM") == b"some real program bytes"
     assert reloaded.disk_name == "MY DISK"
+
+
+def test_bundled_blank_template_is_a_valid_pristine_blank_disk():
+    """scripts/run_c64.py mounts this file (src/c64/blank.d64) fresh on
+    every plain run with no --disk given -- guard against it ever
+    drifting out of sync with what create_blank() actually produces, or
+    accidentally getting mutated (e.g. by someone running the emulator
+    against it directly instead of a copy)."""
+    template_path = Path(__file__).resolve().parent.parent.parent / "src" / "c64" / "blank.d64"
+    template = D64Image.load(template_path)
+    fresh = D64Image.create_blank("BLANK DISK", disk_id="64")
+    assert template.to_bytes() == fresh.to_bytes()

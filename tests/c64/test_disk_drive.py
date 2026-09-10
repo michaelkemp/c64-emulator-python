@@ -121,6 +121,36 @@ def test_load_nonexistent_file_gives_the_real_basic_error(machine):
     assert any("FILE NOT FOUND" in line for line in _screen_text(machine))
 
 
+def test_wildcard_load_gets_the_first_program_on_the_disk():
+    """Reproduces a real, reported session: LOAD"*",8,1 on a disk with a
+    saved program used to give a real ?FILE NOT FOUND ERROR, because the
+    drive was matching "*" as a literal filename instead of a wildcard."""
+    disk = D64Image.create_blank("MY DISK")
+
+    saver = Machine.from_roms(str(ROMS_DIR))
+    saver.disk_drives.mount(8, disk)
+    _boot_and_type(saver, '10 PRINT "HELLO FROM DISK"\r20 END\rSAVE"HELLO",8\r')
+
+    loader = Machine.from_roms(str(ROMS_DIR))
+    loader.disk_drives.mount(8, disk)
+    _boot_and_type(loader, 'LOAD"*",8,1\rRUN\r')
+
+    screen = "".join(_screen_text(loader))
+    assert "FILE NOT FOUND" not in screen
+    assert "HELLO FROM DISK" in screen
+
+
+def test_wildcard_load_with_a_prefix_matches_by_name(machine):
+    disk = D64Image.create_blank("MY DISK")
+    disk.write_file("OTHER", b"\x01\x08" + b"x" * 20)
+    disk.write_file("PACMAN", b"\x01\x08" + b"y" * 20)
+    machine.disk_drives.mount(8, disk)
+
+    _boot_and_type(machine, 'LOAD"PAC*",8\r')
+
+    assert not any("FILE NOT FOUND" in line for line in _screen_text(machine))
+
+
 def test_two_drives_stay_independent_by_device_number():
     disk8 = D64Image.create_blank("DRIVE EIGHT")
     disk9 = D64Image.create_blank("DRIVE NINE")

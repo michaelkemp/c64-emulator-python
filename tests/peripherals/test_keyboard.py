@@ -49,6 +49,17 @@ def test_real_shift_key_maps_to_lshift(kb):
     assert not matrix.is_pressed(*KEY_POSITIONS["LSHIFT"])
 
 
+def test_numpad_multiply_maps_to_asterisk(kb):
+    # Deliberately not Shift+8 -- that combo is reserved for a real "(" on
+    # this keyboard, and the numpad's operator keys (*, /, -, +) are
+    # untouched by JoystickInput, which only claims the numpad's digits.
+    keyboard, matrix = kb
+    keyboard.handle_event(down(pygame.K_KP_MULTIPLY))
+    assert matrix.is_pressed(*KEY_POSITIONS["ASTERISK"])
+    keyboard.handle_event(up(pygame.K_KP_MULTIPLY))
+    assert not matrix.is_pressed(*KEY_POSITIONS["ASTERISK"])
+
+
 def test_left_arrow_presses_crsr_right_and_synthesizes_shift(kb):
     keyboard, matrix = kb
     keyboard.handle_event(down(pygame.K_LEFT))

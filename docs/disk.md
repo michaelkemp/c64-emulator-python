@@ -172,6 +172,77 @@ that don't actually exist, producing garbled on-screen text instead of
 a clean error when actually run against the real BASIC ROM -- caught by
 testing it, not left as an assumption.
 
+**Wildcard `LOAD` (`*`/`?`)** -- real, documented KERNAL/DOS usage, not
+just a plain filename: `LOAD"*",8,1` ("load the first/next program on
+the disk"), `LOAD"PAC*",8,1` (first name starting with `PAC`), `LOAD"CA?
+",8` (`?` matches exactly one character). Implemented in `D64Image.
+read_file()` via `_matches_wildcard()`, verified against how real CBM DOS
+actually behaves (not assumed): `*` matches the rest of the name, and
+**everything in the pattern after the `*` is ignored entirely** -- a
+real, verified hardware quirk, not a bug, so `LOAD"PIC*.KOA",8` behaves
+exactly like `LOAD"PIC*",8` and can't be used to filter by "extension".
+A pattern with no wildcard character must still match the full name
+length exactly (`_find_entry`'s plain equality check, used whenever
+`_find_matching_entry`'s pattern has neither `*` nor `?`, so the common
+case pays zero extra cost). A leading drive-*unit* prefix (`"0:"` or
+`"1:"`, meaningful only on real dual-unit drives like the 4040/8250) is
+stripped before matching -- meaningless for a 1541 or this project's
+one-image-per-device model, but real, documented syntax (`LOAD"0:*",8,1`)
+that real hardware also just ignores. **One deliberate simplification**:
+a bare `"*"` on real hardware actually means "whatever file was last
+accessed" (it needs real disk-head-position state this project doesn't
+model) -- here it's simplified to "the first directory entry", which is
+what a real, freshly-booted `LOAD"*",8,1` actually hits in practice (see
+Known Gaps). Wildcard matching applies to `LOAD` only, not `SAVE` -- real
+hardware's `@0:*`-style SAVE convention (replace whatever was last
+loaded) isn't modeled, a disclosed, narrower gap.
+
+**Both exact-name and wildcard `LOAD` skip `DEL`-type directory entries**
+-- found and fixed against a real commercial disk, Jumpman (Epyx): its
+directory's very first entry is `"----------------"`, deliberately typed
+`DEL` (file type nibble 0) but with the closed bit still set, so it
+*displays* in a directory listing (a genuinely scratched entry, by
+contrast, is never shown at all -- see `directory()`'s empty-slot check)
+while never being a valid file to load -- a real, deliberate disk-
+authoring trick some commercial publishers used, often as a cosmetic
+directory separator. A naive bare `"*"` match grabbed this entry first
+(it's first in the directory), and its garbage/BAM-pointing track/sector
+pointer got read back as if it were real program data -- corrupting
+emulated memory and eventually crashing the CPU on an illegal opcode
+several hundred bytes later, not a clean, immediate error. Fixed by
+having both `_find_entry` and `_find_matching_entry` skip any entry whose
+file type is `DEL`, matching real DOS's own file-search behavior.
+Verified two ways: a synthetic regression test reproducing the exact
+byte pattern (`tests/c64/test_d64.py`'s
+`test_wildcard_load_skips_a_visible_del_type_directory_entry`, since the
+real disk itself is copyrighted and never vendored here), and against
+the real disk directly -- `LOAD"*",8,1` now loads the real program and
+returns cleanly to `READY.` instead of crashing.
+
+## Usage
+
+`scripts/run_c64.py` with no `--disk` at all still mounts something on
+device 8, and it **persists across runs by default** -- caught directly
+from a real session: an earlier version of this discarded the naked-run
+disk on exit instead of saving it, so a program `SAVE`d in one run had
+silently vanished on the next. The default disk lives at the gitignored
+`disk-drive/disk8.d64` (created the first time it's needed, seeded from
+the pristine, checked-in `src/c64/blank.d64` template via
+`D64Image.create_blank()` -- no license concerns, unlike ROMs/cartridges,
+since it's pure structural bytes this project generates itself, not
+vendored third-party content). Every subsequent naked run loads that same
+file and saves back to it on exit, exactly like an explicit `--disk`
+target below. The checked-in template itself is never written back to,
+so it stays pristine across runs (guarded by `tests/c64/test_d64.py`'s
+`test_bundled_blank_template_is_a_valid_pristine_blank_disk`).
+
+To use a disk at a path of your own choosing (or more than one drive),
+pass `--disk DEVICE:PATH` (repeatable -- e.g. `--disk 8:games.d64 --disk
+9:data.d64`): creates a fresh blank image at `PATH` if it doesn't exist
+yet, and saves back to `PATH` when the emulator closes, same as the
+default. Programmatically: `machine.disk_drives.mount(device,
+D64Image.load(path))` (or `.create_blank(name)` for a new one) directly.
+
 ## Known gaps
 
 - **No fastloader support** -- the fundamental, disclosed limitation of
@@ -189,3 +260,11 @@ testing it, not left as an assumption.
   8-11; this project's trap dispatches by device number to whichever
   image is mounted for that number, with no artificial single-drive
   restriction.
+- **Bare `LOAD"*",8` means "first directory entry", not "last accessed"**
+  -- see the wildcard section above. Only matters if a program relies
+  specifically on the "last accessed" real-hardware nuance (e.g. loading
+  a file by name, then a later bare `"*"` expecting to reload *that same*
+  file rather than whatever's first on the disk).
+- **No wildcard `SAVE`** -- real hardware's `@0:*`-style convention
+  (replace whatever was last loaded/saved) isn't modeled; `SAVE` always
+  needs an exact target name (optionally `@`-prefixed for replace).

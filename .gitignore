@@ -236,8 +236,14 @@ cartridge-slot/
 
 # Floppy disk images (.d64 etc.) the user drops in locally to test disk
 # support -- never vendored, same reasoning as roms/ and cartridge-slot/
-# above. See docs/roadmap.md's Phase 11 (disk, not yet started).
+# above. See docs/disk.md.
 1541-floppy/
+
+# scripts/run_c64.py's default device-8 disk when no --disk is given --
+# your own session's state (starts as a copy of the pristine, checked-in
+# src/c64/blank.d64 template), not something to track as source. See
+# docs/disk.md's Usage section.
+disk-drive/
 
 # scripts/render_frame.py's and scripts/render_audio.py's default
 # output -- generated media, not something to track.

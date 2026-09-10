@@ -116,7 +116,7 @@ class DiskDrives:
             data = self._build_directory_listing(image)
         else:
             try:
-                data = image.read_file(name)
+                data = image.read_file(_strip_drive_unit_prefix(name))
             except FileNotFoundOnDisk:
                 return self._fail(cpu, ERR_FILE_NOT_FOUND)
 
@@ -229,3 +229,15 @@ class DiskDrives:
 
 def _petscii_display(name: str, width: int) -> bytes:
     return name.encode("ascii", errors="replace")[:width].ljust(width, b" ")
+
+
+def _strip_drive_unit_prefix(name: str) -> str:
+    """A leading "0:" or "1:" selects a drive *unit* within a dual-unit
+    unit (real hardware like the 4040/8250) -- meaningless for a 1541 or
+    this project's one-image-per-device-number model, so it's stripped
+    rather than treated as part of the filename. Real drives accept and
+    ignore it the same way, which is why `LOAD"0:*",8,1` is real,
+    documented KERNAL usage (see docs/disk.md)."""
+    if len(name) >= 2 and name[0] in "01" and name[1] == ":":
+        return name[2:]
+    return name

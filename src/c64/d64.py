@@ -77,6 +77,23 @@ def _from_petscii_name(raw: bytes) -> str:
     return raw.rstrip(bytes([PETSCII_PAD])).decode("ascii", errors="replace")
 
 
+def _matches_wildcard(name: str, pattern: str) -> bool:
+    """Real CBM DOS wildcard matching for LOAD: `?` matches exactly one
+    character; `*` matches the rest of the name, and -- a real, verified
+    quirk of the actual hardware, not a bug -- everything in `pattern`
+    *after* the `*` is ignored entirely (so `"*.PRG"` does NOT filter by
+    extension; it behaves exactly like a bare `"*"`). A pattern with no
+    wildcard at all must match the full name length exactly."""
+    star = pattern.find("*")
+    if star != -1:
+        pattern = pattern[:star]
+    elif len(name) != len(pattern):
+        return False
+    if len(name) < len(pattern):
+        return False
+    return all(p == "?" or p == n for p, n in zip(pattern, name))
+
+
 class D64Image:
     def __init__(self, data: bytearray) -> None:
         if len(data) != IMAGE_SIZE:
@@ -125,7 +142,9 @@ class D64Image:
         return bytes(self.data)
 
     def save(self, path: Path | str) -> None:
-        Path(path).write_bytes(self.to_bytes())
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(self.to_bytes())
 
     # -- BAM (Block Availability Map) ------------------------------------
 
@@ -242,7 +261,32 @@ class D64Image:
 
     def _find_entry(self, name: str) -> dict | None:
         for entry in self.directory():
+            # A closed DEL-type entry is a real, deliberate disk-authoring
+            # trick some commercial disks use (confirmed against a real
+            # disk, Jumpman -- see docs/disk.md): a directory entry crafted
+            # to *display* (unlike a genuinely scratched entry, which is
+            # never shown at all -- see `directory()`'s empty-slot check
+            # above) but never to be loadable, often as a cosmetic
+            # separator with a garbage/BAM-pointing track/sector. Matching
+            # it as a real file would feed BAM/directory bytes back as if
+            # they were program data. Real DOS's own file search skips
+            # DEL-type entries for exactly this reason.
+            if entry["file_type"] == FILE_TYPE_DEL:
+                continue
             if entry["name"] == name:
+                return entry
+        return None
+
+    def _find_matching_entry(self, pattern: str) -> dict | None:
+        """LOAD-side lookup: `pattern` may contain the real DOS wildcards
+        `*`/`?` (see `_matches_wildcard`) -- an exact name with neither
+        character takes the fast, unambiguous path via `_find_entry`."""
+        if "*" not in pattern and "?" not in pattern:
+            return self._find_entry(pattern)
+        for entry in self.directory():
+            if entry["file_type"] == FILE_TYPE_DEL:  # see _find_entry
+                continue
+            if _matches_wildcard(entry["name"], pattern):
                 return entry
         return None
 
@@ -271,7 +315,7 @@ class D64Image:
     # -- file read/write --------------------------------------------------
 
     def read_file(self, name: str) -> bytes:
-        entry = self._find_entry(name)
+        entry = self._find_matching_entry(name)
         if entry is None:
             raise FileNotFoundOnDisk(name)
         track, sector = entry["first_track"], entry["first_sector"]
